@@ -24,8 +24,8 @@ TIME=time
 ifeq "$(findstring MINGW32,$(shell uname -s))" "MINGW32"
   # MinGW MSYS on XP
   #
-  LUA=lua
-  LUAC=luac
+  LUA=lua.exe
+  LUAC=luac.exe
   _SO=.dll
   _TARGET_SO=./lua51-lanes.dll
   TIME=timeit.exe
@@ -71,8 +71,9 @@ rock:
 #--- Testing ---
 #
 test:
+	$(MAKE) errhangtest
 	$(MAKE) irayo_recursive
-#	$(MAKE) irayo_closure
+	$(MAKE) irayo_closure
 	$(MAKE) basic
 	$(MAKE) fifo
 	$(MAKE) keeper
@@ -82,6 +83,8 @@ test:
 	$(MAKE) objects
 	$(MAKE) fibonacci
 	$(MAKE) recursive
+	$(MAKE) func_is_string
+	$(MAKE) atexit
 
 basic: tests/basic.lua $(_TARGET_SO)
 	$(_PREFIX) $(LUA) $<
@@ -140,7 +143,19 @@ irayo_closure: tests/irayo_closure.lua $(_TARGET_SO)
 finalizer: tests/finalizer.lua $(_TARGET_SO)
 	$(_PREFIX) $(LUA) $<
 
+errhangtest: tests/errhangtest.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
 error-test: tests/error.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+appendud: tests/appendud.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+func_is_string: tests/func_is_string.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+atexit: tests/atexit.lua $(_TARGET_SO)
 	$(_PREFIX) $(LUA) $<
 
 #---

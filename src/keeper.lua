@@ -11,7 +11,7 @@
 --[[
 ===============================================================================
 
-Copyright (C) 2008 Asko Kauppi <akauppi@gmail.com>
+Copyright (C) 2008-10 Asko Kauppi <akauppi@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -43,11 +43,25 @@ assert( nil_sentinel )
 local table_remove= assert( table.remove )
 local table_concat= assert( table.concat )
 
+--[[
 local function WR(...)
     if io then 
         io.stderr:write( table_concat({...},'\t').."\n" ) 
     end
 end
+
+local function DEBUG(title,ud,key)
+    assert( title and ud and key )
+
+    local data,incoming,_= tables(ud)
+
+    local s= tostring(data[key])
+    for _,v in ipairs( incoming[key] or {} ) do
+        s= s..", "..tostring(v)
+    end
+    WR( "*** "..title.." ("..tostring(key).."): ", s )
+end
+--]]
 
 -----
 -- Actual data store
@@ -92,20 +106,6 @@ local function tables( ud )
     return _data[ud], _incoming[ud], _limits[ud]
 end
 
-
-local function DEBUG(title,ud,key)
-    assert( title and ud and key )
-
-    local data,incoming,_= tables(ud)
-
-    local s= tostring(data[key])
-    for _,v in ipairs( incoming[key] or {} ) do
-        s= s..", "..tostring(v)
-    end
-    WR( "*** "..title.." ("..tostring(key).."): ", s )
-end
-
-
 -----
 -- bool= send( linda_deep_ud, key, ... )
 --
@@ -135,7 +135,7 @@ function send( ud, key, ... )
     local m= limits[key]
 
     if m and len+n > m then
-        return false    -- would exceed the limit; try again later
+        return false    -- would exceed the limit; try again later
     end
 
     for i=1,n do

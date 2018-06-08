@@ -6,7 +6,8 @@
 -- Author: Asko Kauppi <akauppi@gmail.com>
 --
 -- History:
---    Jun-08 AKa: major revise
+--    3-Dec-10  BGe: Added support to generate a lane from a string
+--    Jun-08    AKa: major revise
 --    15-May-07 AKa: pthread_join():less version, some speedup & ability to
 --                   handle more threads (~ 8000-9000, up from ~ 5000)
 --    26-Feb-07 AKa: serialization working (C side)
@@ -15,7 +16,7 @@
 --[[
 ===============================================================================
 
-Copyright (C) 2007-08 Asko Kauppi <akauppi@gmail.com>
+Copyright (C) 2007-10 Asko Kauppi <akauppi@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -40,26 +41,17 @@ THE SOFTWARE.
 
 module( "lanes", package.seeall )
 
-require "lua51-lanes"
-assert( type(lanes)=="table" )
+local mm = require "lua51-lanes"
+assert( type(mm)=="table" )
 
-local mm= lanes
 
-local linda_id=    assert( mm.linda_id )
-
-local thread_new=   assert(mm.thread_new)
-local thread_status= assert(mm.thread_status)
-local thread_join=  assert(mm.thread_join)
-local thread_cancel= assert(mm.thread_cancel)
+local thread_new = assert(mm.thread_new)
 
 local _single= assert(mm._single)
 local _version= assert(mm._version)
 
-local _deep_userdata= assert(mm._deep_userdata)
-
 local now_secs= assert( mm.now_secs )
 local wakeup_conv= assert( mm.wakeup_conv )
-local timer_gateway= assert( mm.timer_gateway )
 
 local max_prio= assert( mm.max_prio )
 
@@ -81,15 +73,13 @@ local type= assert( type )
 local pairs= assert( pairs )
 local tostring= assert( tostring )
 local error= assert( error )
-local setmetatable= assert( setmetatable )
-local rawget= assert( rawget )
 
 ABOUT= 
 {
     author= "Asko Kauppi <akauppi@gmail.com>",
     description= "Running multiple Lua states in parallel",
     license= "MIT/X11",
-    copyright= "Copyright (c) 2007-08, Asko Kauppi",
+    copyright= "Copyright (c) 2007-10, Asko Kauppi",
     version= _version,
 }
 
@@ -123,76 +113,16 @@ end
 --
 -- lane_h.state: "pending"/"running"/"waiting"/"done"/"error"/"cancelled"
 --
-local lane_mt= {
-    __index= function( me, k )
-                if type(k) == "number" then
-                    -- 'me[0]=true' marks we've already taken in the results
-                    --
-                    if not rawget( me, 0 ) then
-                        -- Wait indefinately; either propagates an error or
-                        -- returns the return values
-                        --
-                        me[0]= true  -- marker, even on errors
-
-                        local t= { thread_join(me._ud) }   -- wait indefinate
-                            --
-                            -- { ... }      "done": regular return, 0..N results
-                            -- { }          "cancelled"
-                            -- { nil, err_str, stack_tbl } "error"
-                        
-                        local st= thread_status(me._ud)
-                        if st=="done" then
-                            -- Use 'pairs' and not 'ipairs' so that nil holes in
-                            -- the returned values are tolerated.
-                            --
-                            for i,v in pairs(t) do
-                                me[i]= v
-                            end
-                        elseif st=="error" then
-                            assert( t[1]==nil and t[2] and type(t[3])=="table" )
-                            me[-1]= t[2]
-                            -- me[-2] could carry the stack table, but even 
-                            -- me[-1] is rather unnecessary (and undocumented);
-                            -- use ':join()' instead.   --AKa 22-Jan-2009
-                        elseif st=="cancelled" then
-                            -- do nothing
-                        else
-                            error( "Unexpected status: "..st )
-                        end
-                    end
-
-                    -- Check errors even if we'd first peeked them via [-1]
-                    -- and then came for the actual results.
-                    --
-                    local err= rawget(me, -1)
-                    if err~=nil and k~=-1 then
-                        -- Note: Lua 5.1 interpreter is not prepared to show
-                        --       non-string errors, so we use 'tostring()' here
-                        --       to get meaningful output.  --AKa 22-Jan-2009
-                        --
-                        --       Also, the stack dump we get is no good; it only
-                        --       lists our internal Lanes functions. There seems
-                        --       to be no way to switch it off, though.
-                        
-                        -- Level 3 should show the line where 'h[x]' was read
-                        -- but this only seems to work for string messages
-                        -- (Lua 5.1.4). No idea, why.   --AKa 22-Jan-2009
-                        --
-                        error( tostring(err), 3 )   -- level 3 should show the line where 'h[x]' was read
-                    end
-                    return rawget( me, k )
-                    --
-                elseif k=="status" then     -- me.status
-                    return thread_status(me._ud)
-                    --
-                else
-                    error( "Unknown key: "..k )
-                end
-             end
-    }
-
+-- Note: Would be great to be able to have '__ipairs' metamethod, that gets
+--      called by 'ipairs()' function to custom iterate objects. We'd use it
+--      for making sure a lane has ended (results are available); not requiring
+--      the user to precede a loop by explicit 'h[0]' or 'h:join()'.
+--
+--      Or, even better, 'ipairs()' should start valuing '__index' instead
+--      of using raw reads that bypass it.
+--
 -----
--- h= lanes.gen( [libs_str|opt_tbl [, ...],] lane_func ) ( [...] )
+-- lanes.gen( [libs_str|opt_tbl [, ...],] lane_func ) ( [...] ) -> h
 --
 -- 'libs': nil:     no libraries available (default)
 --         "":      only base library ('assert', 'print', 'unpack' etc.)
@@ -216,8 +146,6 @@ local lane_mt= {
 -- modifiers, and prepares a lane generator. One can either finish here,
 -- and call the generator later (maybe multiple times, with different parameters) 
 -- or add on actual thread arguments to also ignite the thread on the same call.
---
-local lane_proxy
 
 local valid_libs= {
     ["package"]= true,
@@ -260,8 +188,9 @@ function gen( ... )
     end
 
     local func= select(n,...)
-    if type(func)~="function" then
-        error( "Last parameter not function: "..tostring(func) )
+    local functype = type(func)
+    if functype ~= "function" and functype ~= "string" then
+        error( "Last parameter not function or string: "..tostring(func))
     end
 
     -- Check 'libs' already here, so the error goes in the right place
@@ -293,48 +222,23 @@ function gen( ... )
     -- Lane generator
     --
     return function(...)
-              return lane_proxy( thread_new( func, libs, cs, prio, g_tbl,
-                                             ... ) )     -- args
+              return thread_new( func, libs, cs, prio, g_tbl, ...)     -- args
            end
 end
-
-lane_proxy= function( ud )
-    local proxy= {
-        _ud= ud,
-        
-        -- void= me:cancel()
-        --
-        cancel= function(me) thread_cancel(me._ud) end,
-        
-        -- [...] | [nil,err,stack_tbl]= me:join( [wait_secs=-1] )
-        --
-        join= function( me, wait ) 
-                return thread_join( me._ud, wait )
-            end,
-        }
-    assert( proxy._ud )
-    setmetatable( proxy, lane_mt )
-
-    return proxy
-end
-
 
 ---=== Lindas ===---
 
 -- We let the C code attach methods to userdata directly
 
 -----
--- linda_ud= lanes.linda()
+-- lanes.linda() -> linda_ud
 --
-function linda()
-    local proxy= _deep_userdata( linda_id )
-    assert( (type(proxy) == "userdata") and getmetatable(proxy) )
-    return proxy
-end
+linda = mm.linda
 
 
 ---=== Timers ===---
 
+local timer_gateway= assert( mm.timer_gateway )
 --
 -- On first 'require "lanes"', a timer lane is spawned that will maintain
 -- timer tables and sleep in between the timer events. All interaction with
@@ -495,14 +399,18 @@ if first_time then
     -- We let the timer lane be a "free running" thread; no handle to it
     -- remains.
     --
-    gen( "io", { priority=max_prio }, function()
-
+    gen( "io,package", { priority=max_prio}, function()
+        set_debug_threadname( "LanesTimer")
         while true do
             local next_wakeup= check_timers()
 
             -- Sleep until next timer to wake up, or a set/clear command
             --
-            local secs= next_wakeup and (next_wakeup - now_secs()) or nil
+            local secs
+            if next_wakeup then
+                secs =  next_wakeup - now_secs()
+                if secs < 0 then secs = 0 end
+            end
             local linda= timer_gateway:receive( secs, TGW_KEY )
 
             if linda then
@@ -607,5 +515,6 @@ function genatomic( linda, key, initial_val )
     end
 end
 
+-- newuserdata = mm.newuserdata
 
 --the end

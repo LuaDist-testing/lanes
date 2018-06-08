@@ -7,25 +7,25 @@
 --      <http://luarocks.org/en/Rockspec_format>
 --
 -- History:
---  PLM 13-Nov-2009: 2.0.3-2. Building on windows made easier. Also usurping Asko in maintainance. And updating homepage.
---  HHM 19-Oct-2009: 2.0.3-1 update.
+--  BGe 1-Mar-2011: 2.1.0
+--  BGe 27-Jan-2011: 2.0.11 (see CHANGES)
 --  AKa 1-Sep-2008: 2.0-2 (NOT sent to list): fixed VC++ not finding DLL issue
 --  AKa 20-Aug-2008: 2.0-1 sent to luarocks-developers
 --
 
 package = "lanes"
 
-version = "2.0.3-2"
+version = "2.1-1"
 
 -- LuaDist source
 source = {
-  tag = "2.0.3-2",
+  tag = "2.1-1",
   url = "git://github.com/LuaDist-testing/lanes.git"
 }
 -- Original source
 -- source= {
---     url= "http://luaforge.net/frs/download.php/3927/lanes-2.0.3.tgz",
---     md5= "d07ab814a15bb33898c2f607accefca6"
+--     url= "git://github.com/LuaLanes/lanes.git",
+--     branch= "v2.1.0"
 -- }
 
 description = {
@@ -35,21 +35,22 @@ description = {
         providing the possibility to run multiple Lua states in parallel. 
     ]],
 	license= "MIT/X11",
-	homepage="http://kotisivu.dnainternet.net/askok/bin/lanes/",
-	maintainer="Pierre LeMoine <yarr.luben@gmail.com>"	
+	homepage="http://kotisivu.dnainternet.net/askok/lanes/",
+	maintainer="Benoit Germain <bnt.germain@gmail.com>"	
 }
 
 -- Q: What is the difference of "windows" and "win32"? Seems there is none;
 --    so should we list either one or both?
 --
-supported_platforms= { "windows",
+supported_platforms= { "win32",
                        "macosx", 
                        "linux", 
-                       "freebsd"
+                       "freebsd",   -- TBD: not tested
+                       "msys",      -- TBD: not supported by LuaRocks 1.0 (or is it?)
 }
 
 dependencies= {
-    "lua >= 5.1, < 5.2",
+    "lua >= 5.1, <= 5.2",
 }
 
 --
@@ -72,12 +73,7 @@ build = {
     platforms= {
         windows= {
             type= "command",
-            build_command=
-               --setup-vc.cmd should be modified to use ProgramFiles & ProgramFiles(x86)
-               --instead of hardcoded paths!
-               "(set LUA51 || set LUA51=$(LUA_BINDIR))&" .. --set LUA51 unless already present
-               "(set VCINSTALLDIR || call setup-vc.cmd) &" .. --dito for VCINSTALLDIR
-               "make-vc.cmd", --now build
+            build_command= "make-vc.cmd",
             install= {
                 lua = { "src/lanes.lua" },
                 lib = { "lua51-lanes.dll" }
