@@ -1,10 +1,26 @@
 CHANGES:
 
+CHANGE 76: BGe 10-Oct-13
+   * version 3.7.0
+   * fix lanes.threads() not being available in a lane where lanes.configure() settings didn't contain track_lanes although the initial configure() call did.
+
+CHANGE 75: BGe 7-Oct-13
+   * require "lanes".configure() sequence is only necessary at the first require "lanes".
+
+CHANGE 74: BGe 7-Oct-13
+   * fix a crash at application shutdown where in some situations we could deinitialize the protected allocator mutex while a lane was still using it.
+
+CHANGE 73: BGe 4-Oct-13
+   * fix timers broken by change 69
+
+CHANGE 72: BGe 3-Oct-13
+   * bugfix: no longer create a global named "lanes.core" inside lanes having "*" as library list
+
 CHANGE 71: BGe 30-Sept-13
+   * version 3.6.6
    * properly handle cases when a Lua C module is a C function
 
 CHANGE 70: BGe 27-Step-13
-   * version 3.6.6
    * no longer call core.configure with dummy params when requiring lanes more than once (fixes potential multithreading issues with LuaJIT allocator)
    * activated EnableCrashingOnCrashes() is active on Win32 debug builds
    * fixed some comments in code

@@ -52,7 +52,7 @@
  *      ...
  */
 
-char const* VERSION = "3.6.6";
+char const* VERSION = "3.7.0";
 
 /*
 ===============================================================================
@@ -326,7 +326,7 @@ static void lane_cleanup( struct s_lane* s)
 #endif // THREADWAIT_METHOD == THREADWAIT_CONDVAR
 
 #if HAVE_LANE_TRACKING
-	if( tracking_first)
+	if( tracking_first != NULL)
 	{
 		// Lane was cleaned up, no need to handle at process termination
 		tracking_remove( s);
@@ -452,17 +452,17 @@ LUAG_FUNC( linda_send)
 
 			// change status of lane to "waiting"
 			{
-				struct s_lane *s;
+				struct s_lane* s;
 				enum e_status prev_status = ERROR_ST; // prevent 'might be used uninitialized' warnings
-				STACK_GROW(L, 1);
+				STACK_GROW( L, 1);
 
 				STACK_CHECK( L);
 				lua_pushlightuserdata( L, CANCEL_TEST_KEY);
 				lua_rawget( L, LUA_REGISTRYINDEX);
 				s = lua_touserdata( L, -1);     // lightuserdata (true 's_lane' pointer) or nil if in the main Lua state
-				lua_pop(L, 1);
+				lua_pop( L, 1);
 				STACK_END( L, 0);
-				if( s)
+				if( s != NULL)
 				{
 					prev_status = s->status; // RUNNING, most likely
 					ASSERT_L( prev_status == RUNNING); // but check, just in case
@@ -473,14 +473,14 @@ LUAG_FUNC( linda_send)
 				// could not send because no room: wait until some data was read before trying again, or until timeout is reached
 				if( !SIGNAL_WAIT( &linda->read_happened, &K->lock_, timeout))
 				{
-					if( s)
+					if( s != NULL)
 					{
 						s->waiting_on = NULL;
 						s->status = prev_status;
 					}
 					break;
 				}
-				if( s)
+				if( s != NULL)
 				{
 					s->waiting_on = NULL;
 					s->status = prev_status;
@@ -621,7 +621,7 @@ LUAG_FUNC( linda_receive)
 				s = lua_touserdata( L, -1);     // lightuserdata (true 's_lane' pointer) or nil if in the main Lua state
 				lua_pop( L, 1);
 				STACK_END( L, 0);
-				if( s)
+				if( s != NULL)
 				{
 					prev_status = s->status; // RUNNING, most likely
 					ASSERT_L( prev_status == RUNNING); // but check, just in case
@@ -632,14 +632,14 @@ LUAG_FUNC( linda_receive)
 				// not enough data to read: wakeup when data was sent, or when timeout is reached
 				if( !SIGNAL_WAIT( &linda->write_happened, &K->lock_, timeout))
 				{
-					if( s)
+					if( s != NULL)
 					{
 						s->waiting_on = NULL;
 						s->status = prev_status;
 					}
 					break;
 				}
-				if( s)
+				if( s != NULL)
 				{
 					s->waiting_on = NULL;
 					s->status = prev_status;
@@ -837,7 +837,7 @@ static int linda_tostring( lua_State* L, int _idx, bool_t _opt)
 	{
 		luaL_argcheck( L, linda, _idx, "expected a linda object!");
 	}
-	if( linda)
+	if( linda != NULL)
 	{
 		char text[32];
 		int len;
@@ -1245,6 +1245,10 @@ static MUTEX_T selfdestruct_cs;
 
 struct s_lane* volatile selfdestruct_first = SELFDESTRUCT_END;
 
+// After a lane has removed itself from the chain, it still performs some processing.
+// The terminal desinit sequence should wait for all such processing to terminate before force-killing threads
+int volatile selfdestructing_count = 0;
+
 /*
  * Add the lane to selfdestruct chain; the ones still running at the end of the
  * whole process will be cancelled.
@@ -1280,6 +1284,8 @@ static bool_t selfdestruct_remove( struct s_lane *s )
                 if (*ref == s) {
                     *ref= s->selfdestruct_next;
                     s->selfdestruct_next= NULL;
+                    // the terminal shutdown should wait until the lane is done with its lua_close()
+                    ++ selfdestructing_count;
                     found= TRUE;
                     break;
                 }
@@ -1325,10 +1331,10 @@ static int selfdestruct_gc( lua_State* L)
 	{
 		// Signal _all_ still running threads to exit (including the timer thread)
 		//
-		MUTEX_LOCK( &selfdestruct_cs );
+		MUTEX_LOCK( &selfdestruct_cs);
 		{
 			struct s_lane* s = selfdestruct_first;
-			while( s != SELFDESTRUCT_END )
+			while( s != SELFDESTRUCT_END)
 			{
 				// attempt a regular unforced hard cancel with a small timeout
 				bool_t cancelled = THREAD_ISNULL( s->thread) || thread_cancel( s, 0.0001, FALSE);
@@ -1344,7 +1350,7 @@ static int selfdestruct_gc( lua_State* L)
 				s = s->selfdestruct_next;
 			}
 		}
-		MUTEX_UNLOCK( &selfdestruct_cs );
+		MUTEX_UNLOCK( &selfdestruct_cs);
 
 		// When noticing their cancel, the lanes will remove themselves from
 		// the selfdestruct chain.
@@ -1384,13 +1390,26 @@ static int selfdestruct_gc( lua_State* L)
 					MUTEX_UNLOCK( &selfdestruct_cs);
 					// if timeout elapsed, or we know all threads have acted, stop waiting
 					t_now = now_secs();
-					if( n == 0 || ( t_now >= t_until))
+					if( n == 0 || (t_now >= t_until))
 					{
 						DEBUGSPEW_CODE( fprintf( stderr, "%d uncancelled lane(s) remain after waiting %fs at process end.\n", n, shutdown_timeout - (t_until - t_now)));
 						break;
 					}
 				}
 			}
+		}
+
+		// If some lanes are currently cleaning after themselves, wait until they are done.
+		// They are no longer listed in the selfdestruct chain, but they still have to lua_close().
+		{
+			bool_t again = TRUE;
+			do
+			{
+				MUTEX_LOCK( &selfdestruct_cs);
+				again = (selfdestructing_count > 0) ? TRUE : FALSE;
+				MUTEX_UNLOCK( &selfdestruct_cs);
+				YIELD();
+			} while( again);
 		}
 
 		//---
@@ -1404,7 +1423,7 @@ static int selfdestruct_gc( lua_State* L)
 			// these are not running, and the state can be closed
 			MUTEX_LOCK( &selfdestruct_cs);
 			{
-				struct s_lane* s= selfdestruct_first;
+				struct s_lane* s = selfdestruct_first;
 				while( s != SELFDESTRUCT_END)
 				{
 					struct s_lane* next_s = s->selfdestruct_next;
@@ -1830,10 +1849,14 @@ static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
     {
         // We're a free-running thread and no-one's there to clean us up.
         //
-        lua_close( s->L );
+        lua_close( s->L);
         s->L = L = 0;
 
         lane_cleanup( s);
+        MUTEX_LOCK( &selfdestruct_cs);
+        // done with lua_close(), terminal shutdown sequence may proceed
+        -- selfdestructing_count;
+        MUTEX_UNLOCK( &selfdestruct_cs);
     }
     else
     {
@@ -1909,7 +1932,7 @@ LUAG_FUNC( thread_new)
 	uint_t required = lua_isnoneornil( L, 8) ? 0 : 8;
 
 #define FIXED_ARGS 8
-	uint_t args= lua_gettop(L) - FIXED_ARGS;
+	uint_t args = lua_gettop(L) - FIXED_ARGS;
 
 	if( prio < THREAD_PRIO_MIN || prio > THREAD_PRIO_MAX)
 	{
@@ -1920,7 +1943,7 @@ LUAG_FUNC( thread_new)
 	DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "thread_new: setup\n" INDENT_END));
 	DEBUGSPEW_CODE( ++ debugspew_indent_depth);
 
-	// populate with selected libraries at  the same time
+	// populate with selected libraries at the same time
 	//
 	L2 = luaG_newstate( L, on_state_create, libs);
 
@@ -1935,7 +1958,7 @@ LUAG_FUNC( thread_new)
 
 	DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "thread_new: update 'package'\n" INDENT_END));
 	// package
-	if( package)
+	if( package != 0)
 	{
 		luaG_inter_copy_package( L, L2, package, eLM_LaneBody);
 	}
@@ -1944,7 +1967,7 @@ LUAG_FUNC( thread_new)
 
 	STACK_CHECK( L);
 	STACK_CHECK( L2);
-	if( required)
+	if( required != 0)
 	{
 		int nbRequired = 1;
 		DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "thread_new: require 'required' list\n" INDENT_END));
@@ -1979,8 +2002,19 @@ LUAG_FUNC( thread_new)
 				}
 				else
 				{
+					// if is it "lanes" or "lanes.core", make sure we have copied the initial settings over
+					// which might not be the case if the libs list didn't include lanes.core or "*"
+					if( strncmp( name, "lanes.core", len) == 0) // this works both both "lanes" and "lanes.core" because of len
+					{
+						luaG_copy_one_time_settings( L, L2, name);
+					}
 					lua_pushlstring( L2, name, len);                   // require() name
-					lua_pcall( L2, 1, 1, 0);                           // ret
+					if( lua_pcall( L2, 1, 1, 0) != LUA_OK)             // ret/errcode
+					{
+						// propagate error to main state if any
+						luaG_inter_move( L2, L, 1, eLM_LaneBody);        //
+						return lua_error( L);
+					}
 					STACK_MID( L2, 1);
 					// after requiring the module, register the functions it exported in our name<->function database
 					populate_func_lookup_table( L2, -1, name);
@@ -2068,7 +2102,9 @@ LUAG_FUNC( thread_new)
 		res = luaG_inter_copy( L, L2, args, eLM_LaneBody);    // L->L2
 		DEBUGSPEW_CODE( -- debugspew_indent_depth);
 		if( res != 0)
+		{
 			return luaL_error( L, "tried to copy unsupported types");
+		}
 	}
 	STACK_MID( L, 0);
 
@@ -2085,7 +2121,7 @@ LUAG_FUNC( thread_new)
 	ASSERT_L( s);
 
 	//memset( s, 0, sizeof(struct s_lane) );
-	s->L= L2;
+	s->L = L2;
 	s->status= PENDING;
 	s->waiting_on = NULL;
 	s->debug_name = NULL;
@@ -2103,8 +2139,8 @@ LUAG_FUNC( thread_new)
 
 	// Set metatable for the userdata
 	//
-	lua_pushvalue( L, lua_upvalueindex(1) );
-	lua_setmetatable( L, -2 );
+	lua_pushvalue( L, lua_upvalueindex( 1));
+	lua_setmetatable( L, -2);
 	STACK_MID( L, 1);
 
 	// Clear environment for the userdata
@@ -2115,11 +2151,11 @@ LUAG_FUNC( thread_new)
 	// Place 's' in registry, for 'cancel_test()' (even if 'cs'==0 we still
 	// do cancel tests at pending send/receive).
 	//
-	lua_pushlightuserdata( L2, CANCEL_TEST_KEY );
-	lua_pushlightuserdata( L2, s );
-	lua_rawset( L2, LUA_REGISTRYINDEX );
+	lua_pushlightuserdata( L2, CANCEL_TEST_KEY);
+	lua_pushlightuserdata( L2, s);
+	lua_rawset( L2, LUA_REGISTRYINDEX);
 
-	if (cs)
+	if( cs)
 	{
 		lua_sethook( L2, cancel_hook, LUA_MASKCOUNT, cs );
 	}
@@ -2607,9 +2643,6 @@ LUAG_FUNC( wakeup_conv )
 static const struct luaL_Reg lanes_functions [] = {
     {"linda", LG_linda},
     {"now_secs", LG_now_secs},
-#if HAVE_LANE_TRACKING
-    {"threads", LG_threads},
-#endif // HAVE_LANE_TRACKING
     {"wakeup_conv", LG_wakeup_conv},
     {"nameof", luaG_nameof},
     {"set_singlethreaded", LG_set_singlethreaded},
@@ -2619,10 +2652,18 @@ static const struct luaL_Reg lanes_functions [] = {
 
 /*
 ** One-time initializations
+ * settings table it at position 1 on the stack
 */
-static void init_once_LOCKED( lua_State* L, int const _on_state_create, int const nbKeepers, lua_Number _shutdown_timeout, bool_t _track_lanes, bool_t verbose_errors)
+static void init_once_LOCKED( lua_State* L)
 {
-	GVerboseErrors = verbose_errors;
+	STACK_CHECK( L);
+
+	lua_getfield( L, 1, "verbose_errors");
+	GVerboseErrors = lua_toboolean( L, -1);
+	lua_pop( L, 1);
+
+	STACK_MID( L, 0);
+
 #if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC)
 	now_secs();     // initialize 'now_secs()' internal offset
 #endif
@@ -2632,26 +2673,27 @@ static void init_once_LOCKED( lua_State* L, int const _on_state_create, int cons
 #endif
 
 #if HAVE_LANE_TRACKING
-	tracking_first = _track_lanes ? TRACKING_END : NULL;
+	MUTEX_INIT( &tracking_cs);
+	lua_getfield( L, 1, "track_lanes");
+	tracking_first = lua_toboolean( L, -1) ? TRACKING_END : NULL;
+	lua_pop( L, 1);
+	STACK_MID( L, 0);
 #endif // HAVE_LANE_TRACKING
 
 	// Locks for 'tools.c' inc/dec counters
 	//
-	MUTEX_INIT( &deep_lock );
-	MUTEX_INIT( &mtid_lock );
+	MUTEX_INIT( &deep_lock);
+	MUTEX_INIT( &mtid_lock);
 
 	// Serialize calls to 'require' from now on, also in the primary state
 	//
-	MUTEX_RECURSIVE_INIT( &require_cs );
+	MUTEX_RECURSIVE_INIT( &require_cs);
 
 	serialize_require( L);
 
 	// Linked chains handling
 	//
-	MUTEX_INIT( &selfdestruct_cs );
-#if HAVE_LANE_TRACKING
-	MUTEX_INIT( &tracking_cs);
-#endif // HAVE_LANE_TRACKING
+	MUTEX_INIT( &selfdestruct_cs);
 
 	//---
 	// Linux needs SCHED_RR to change thread priorities, and that is only
@@ -2677,7 +2719,7 @@ static void init_once_LOCKED( lua_State* L, int const _on_state_create, int cons
 #endif // LINUX_SCHED_RR
 #endif // PLATFORM_LINUX
 	{
-		char const* err = init_keepers( L, _on_state_create, nbKeepers);
+		char const* err = init_keepers( L);
 		if (err)
 		{
 			(void) luaL_error( L, "Unable to initialize: %s", err );
@@ -2688,40 +2730,41 @@ static void init_once_LOCKED( lua_State* L, int const _on_state_create, int cons
 	//
 	ASSERT_L( timer_deep == NULL);
 
-	STACK_CHECK( L);
+	// proxy_ud= deep_userdata( idfunc )
+	//
+	lua_pushliteral( L, "lanes-timer"); // push a name for debug purposes
+	luaG_deep_userdata( L, linda_id);
+	STACK_MID( L, 2);
+	lua_remove( L, -2); // remove the name as we no longer need it
+
+	ASSERT_L( lua_isuserdata(L,-1));
+
+	// Proxy userdata contents is only a 'DEEP_PRELUDE*' pointer
+	//
+	timer_deep = * (DEEP_PRELUDE**) lua_touserdata( L, -1);
+	ASSERT_L( timer_deep && (timer_deep->refcount == 1) && timer_deep->deep);
+
+	// The host Lua state must always have a reference to this Linda object in order for the timer_deep pointer to be valid.
+	// So store a reference that we will never actually use.
+	// at the same time, use this object as a 'desinit' marker:
+	// when the main lua State is closed, this object will be GC'ed
 	{
-		// proxy_ud= deep_userdata( idfunc )
-		//
-		lua_pushliteral( L, "lanes-timer"); // push a name for debug purposes
-		luaG_deep_userdata( L, linda_id);
-		STACK_MID( L, 2);
-		lua_remove( L, -2); // remove the name as we no longer need it
-
-		ASSERT_L( lua_isuserdata(L,-1) );
-
-		// Proxy userdata contents is only a 'DEEP_PRELUDE*' pointer
-		//
-		timer_deep = * (DEEP_PRELUDE**) lua_touserdata( L, -1);
-		ASSERT_L( timer_deep && (timer_deep->refcount == 1) && timer_deep->deep);
-
-		// The host Lua state must always have a reference to this Linda object in order for the timer_deep pointer to be valid.
-		// So store a reference that we will never actually use.
-		// at the same time, use this object as a 'desinit' marker:
-		// when the main lua State is closed, this object will be GC'ed
-		{
-			lua_newuserdata( L, 1);
-			lua_newtable( L);
-			lua_pushnumber( L, _shutdown_timeout);
-			lua_pushcclosure( L, selfdestruct_gc, 1);
-			lua_setfield( L, -2, "__gc");
-			lua_pushliteral( L, "AtExit");
-			lua_setfield( L, -2, "__metatable");
-			lua_setmetatable( L, -2);
-		}
-		lua_insert( L, -2); // Swap key with the Linda object
-		lua_rawset( L, LUA_REGISTRYINDEX);
-
+		lua_newuserdata( L, 1);
+		lua_newtable( L);
+		lua_getfield( L, 1, "shutdown_timeout");
+		lua_pushcclosure( L, selfdestruct_gc, 1);
+		lua_setfield( L, -2, "__gc");
+		lua_pushliteral( L, "AtExit");
+		lua_setfield( L, -2, "__metatable");
+		lua_setmetatable( L, -2);
 	}
+	lua_insert( L, -2); // Swap key with the Linda object
+	lua_rawset( L, LUA_REGISTRYINDEX);
+
+	// we'll need this everytime we transfer some C function from/to this state
+	lua_newtable( L);
+	lua_setfield( L, LUA_REGISTRYINDEX, LOOKUP_REGKEY);
+
 	STACK_END( L, 0);
 }
 
@@ -2729,23 +2772,19 @@ static volatile long s_initCount = 0;
 
 // upvalue 1: module name
 // upvalue 2: module table
+// param 1: settings table
 LUAG_FUNC( configure)
 {
 	char const* name = luaL_checkstring( L, lua_upvalueindex( 1));
-	// all parameter checks are done lua-side
-	int const nbKeepers = (int)lua_tointeger( L, 1);
-	int const on_state_create = lua_isfunction( L, 2) ? 2 : 0;
-	lua_Number shutdown_timeout = lua_tonumber( L, 3);
-	bool_t track_lanes = lua_toboolean( L, 4);
-	bool_t protect_allocator = lua_toboolean( L, 5);
-	bool_t verbose_errors = lua_toboolean( L, 6);
+	_ASSERT_L( L, lua_type( L, 1) == LUA_TTABLE);
+	STACK_CHECK( L);
 
 	DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "%p: lanes.configure() BEGIN\n" INDENT_END, L));
 	DEBUGSPEW_CODE( ++ debugspew_indent_depth);
-	STACK_CHECK( L);
 
 	// not in init_once_LOCKED because we can have several hosted "master" Lua states where Lanes is require()d.
-	if( protect_allocator)
+	lua_getfield( L, 1, "protect_allocator");                              // settings protect_allocator
+	if( lua_toboolean( L, -1))
 	{
 		void* ud;
 		lua_Alloc allocf = lua_getallocf( L, &ud);
@@ -2758,6 +2797,7 @@ LUAG_FUNC( configure)
 			lua_setallocf( L, protected_lua_Alloc, s);
 		}
 	}
+	lua_pop( L, 1);                                                        // settings
 	STACK_MID( L, 0);
 
 	/*
@@ -2772,7 +2812,7 @@ LUAG_FUNC( configure)
 		static volatile int /*bool*/ go_ahead; // = 0
 		if( InterlockedCompareExchange( &s_initCount, 1, 0) == 0)
 		{
-			init_once_LOCKED( L, on_state_create, nbKeepers, shutdown_timeout, track_lanes, verbose_errors);
+			init_once_LOCKED( L);
 			go_ahead = 1; // let others pass
 		}
 		else
@@ -2790,7 +2830,7 @@ LUAG_FUNC( configure)
 			//
 			if( s_initCount == 0)
 			{
-				init_once_LOCKED( L, on_state_create, nbKeepers, shutdown_timeout, track_lanes, verbose_errors);
+				init_once_LOCKED( L);
 				s_initCount = 1;
 			}
 		}
@@ -2798,52 +2838,65 @@ LUAG_FUNC( configure)
 	}
 #endif // THREADAPI == THREADAPI_PTHREAD
 
-	// Create main module interface table
-	lua_pushvalue( L, lua_upvalueindex( 2));                               // ... M
+	// Retrieve main module interface table
+	lua_pushvalue( L, lua_upvalueindex( 2));                               // settings M
 	// remove configure() (this function) from the module interface
-	lua_pushnil( L);                                                       // ... M nil
-	lua_setfield( L, -2, "configure");                                     // ... M
+	lua_pushnil( L);                                                       // settings M nil
+	lua_setfield( L, -2, "configure");                                     // settings M
 	// add functions to the module's table
 	luaG_registerlibfuncs( L, lanes_functions);
+#if HAVE_LANE_TRACKING
+	// register core.threads() only if settings say it should be available
+	if( tracking_first != NULL)
+	{
+		lua_pushcfunction( L, LG_threads);                                   // settings M LG_threads()
+		lua_setfield( L, -2, "threads");
+	}
+#endif // HAVE_LANE_TRACKING
 	STACK_MID( L, 1);
 
-	// metatable for threads
+	ASSERT_L( timer_deep != NULL); // initialized by init_once_LOCKED
+	luaG_push_proxy( L, linda_id, (DEEP_PRELUDE*) timer_deep);             // settings M timer_deep
+	lua_setfield( L, -2, "timer_gateway");                                 // settings M
+	STACK_MID( L, 1);
+
+	// prepare the metatable for threads
 	// contains keys: { __gc, __index, cached_error, cached_tostring, cancel, join }
 	//
-	lua_newtable( L);                                                      // ... M mt
-	lua_pushcfunction( L, LG_thread_gc);                                   // ... M mt LG_thread_gc
-	lua_setfield( L, -2, "__gc");                                          // ... M mt
-	lua_pushcfunction( L, LG_thread_index);                                // ... M mt LG_thread_index
-	lua_setfield( L, -2, "__index");                                       // ... M mt
-	lua_getglobal( L, "error");                                            // ... M mt error
+	lua_newtable( L);                                                      // settings M mt
+	lua_pushcfunction( L, LG_thread_gc);                                   // settings M mt LG_thread_gc
+	lua_setfield( L, -2, "__gc");                                          // settings M mt
+	lua_pushcfunction( L, LG_thread_index);                                // settings M mt LG_thread_index
+	lua_setfield( L, -2, "__index");                                       // settings M mt
+	lua_getglobal( L, "error");                                            // settings M mt error
 	ASSERT_L( lua_isfunction( L, -1));
-	lua_setfield( L, -2, "cached_error");                                  // ... M mt
-	lua_getglobal( L, "tostring");                                         // ... M mt tostring
+	lua_setfield( L, -2, "cached_error");                                  // settings M mt
+	lua_getglobal( L, "tostring");                                         // settings M mt tostring
 	ASSERT_L( lua_isfunction( L, -1));
-	lua_setfield( L, -2, "cached_tostring");                               // ... M mt
-	lua_pushcfunction( L, LG_thread_join);                                 // ... M mt LG_thread_join
-	lua_setfield( L, -2, "join");                                          // ... M mt
-	lua_pushcfunction( L, LG_thread_cancel);                               // ... M mt LG_thread_cancel
-	lua_setfield( L, -2, "cancel");                                        // ... M mt
-	lua_pushliteral( L, "Lane");                                           // ... M mt "Lane"
-	lua_setfield( L, -2, "__metatable");                                   // ... M mt
+	lua_setfield( L, -2, "cached_tostring");                               // settings M mt
+	lua_pushcfunction( L, LG_thread_join);                                 // settings M mt LG_thread_join
+	lua_setfield( L, -2, "join");                                          // settings M mt
+	lua_pushcfunction( L, LG_thread_cancel);                               // settings M mt LG_thread_cancel
+	lua_setfield( L, -2, "cancel");                                        // settings M mt
+	lua_pushliteral( L, "Lane");                                           // settings M mt "Lane"
+	lua_setfield( L, -2, "__metatable");                                   // settings M mt
 
-	lua_pushcclosure( L, LG_thread_new, 1);                                // ... M LG_thread_new
-	lua_setfield(L, -2, "thread_new");                                     // ... M
+	lua_pushcclosure( L, LG_thread_new, 1);                                // settings M LG_thread_new
+	lua_setfield(L, -2, "thread_new");                                     // settings M
 
 	// we can't register 'lanes.require' normally because we want to create an upvalued closure
-	lua_getglobal( L, "require");                                          // ... M require
-	lua_pushcclosure( L, LG_require, 1);                                   // ... M lanes.require
-	lua_setfield( L, -2, "require");                                       // ... M
+	lua_getglobal( L, "require");                                          // settings M require
+	lua_pushcclosure( L, LG_require, 1);                                   // settings M lanes.require
+	lua_setfield( L, -2, "require");                                       // settings M
 
-	lua_pushstring(L, VERSION);                                            // ... M VERSION
-	lua_setfield(L, -2, "version");                                        // ... M
+	lua_pushstring(L, VERSION);                                            // settings M VERSION
+	lua_setfield(L, -2, "version");                                        // settings M
 
-	lua_pushinteger(L, THREAD_PRIO_MAX);                                   // ... M THREAD_PRIO_MAX
-	lua_setfield(L, -2, "max_prio");                                       // ... M
+	lua_pushinteger(L, THREAD_PRIO_MAX);                                   // settings M THREAD_PRIO_MAX
+	lua_setfield(L, -2, "max_prio");                                       // settings M
 
-	lua_pushlightuserdata( L, CANCEL_ERROR);                               // ... M CANCEL_ERROR
-	lua_setfield(L, -2, "cancel_error");                                   // ... M
+	lua_pushlightuserdata( L, CANCEL_ERROR);                               // settings M CANCEL_ERROR
+	lua_setfield(L, -2, "cancel_error");                                   // settings M
 
 	// register all native functions found in that module in the transferable functions database
 	// we process it before _G because we don't want to find the module when scanning _G (this would generate longer names)
@@ -2852,21 +2905,18 @@ LUAG_FUNC( configure)
 
 	// record all existing C/JIT-fast functions
 	// Lua 5.2 no longer has LUA_GLOBALSINDEX: we must push globals table on the stack
-	lua_pushglobaltable( L);                                               // ... M _G
+	lua_pushglobaltable( L);                                               // settings M _G
 	populate_func_lookup_table( L, -1, NULL);
-	lua_pop( L, 1);                                                        // ... M
-
-	ASSERT_L( timer_deep != NULL);
-	// init_once_LOCKED initializes timer_deep, so we must do this after, of course
-	luaG_push_proxy( L, linda_id, (DEEP_PRELUDE*) timer_deep);             // ... M timer_deep
-	lua_setfield( L, -2, "timer_gateway");                                 // ... M
-
-	lua_pop( L, 1);                                                        // ...
+	lua_pop( L, 1);                                                        // settings M
+	// set _R[CONFIG_REGKEY] = settings
+	lua_pushvalue( L, -2);                                                 // settings M settings
+	lua_setfield( L, LUA_REGISTRYINDEX, CONFIG_REGKEY);                    // settings M
+	lua_pop( L, 1);                                                        // settings
 	STACK_END( L, 0);
 	DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "%p: lanes.configure() END\n" INDENT_END, L));
 	DEBUGSPEW_CODE( -- debugspew_indent_depth);
-	// Return nothing
-	return 0;
+	// Return the settings table
+	return 1;
 }
 
 // helper to have correct callstacks when crashing a Win32 running on 64 bits Windows
@@ -2897,16 +2947,28 @@ int LANES_API luaopen_lanes_core( lua_State* L)
 {
 	EnableCrashingOnCrashes();
 
-	STACK_GROW( L, 3);
+	STACK_GROW( L, 4);
 	STACK_CHECK( L);
 
 	// Create main module interface table
 	// we only have 1 closure, which must be called to configure Lanes
-	lua_newtable( L);                         // M
-	lua_pushvalue( L, 1);                     // M "lanes.core"
-	lua_pushvalue( L, -2);                    // M "lanes.core" M
-	lua_pushcclosure( L, LG_configure, 2);    // M LG_configure()
-	lua_setfield( L, -2, "configure");        // M
+	lua_newtable( L);                                   // M
+	lua_pushvalue( L, 1);                               // M "lanes.core"
+	lua_pushvalue( L, -2);                              // M "lanes.core" M
+	lua_pushcclosure( L, LG_configure, 2);              // M LG_configure()
+	lua_getfield( L, LUA_REGISTRYINDEX, CONFIG_REGKEY); // M LG_configure() settings
+	if( !lua_isnil( L, -1)) // this is not the first require "lanes.core": call configure() immediately
+	{
+		lua_pushvalue( L, -1);                            // M LG_configure() settings settings
+		lua_setfield( L, -4, "settings");                 // M LG_configure() settings
+		lua_call( L, 1, 0);                               // M
+	}
+	else
+	{
+		// will do nothing on first invocation, as we haven't stored settings in the registry yet
+		lua_setfield( L, -3, "settings");                 // M LG_configure()
+		lua_setfield( L, -2, "configure");                // M
+	}
 
 	STACK_END( L, 1);
 	return 1;
