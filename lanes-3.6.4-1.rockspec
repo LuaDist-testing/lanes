@@ -7,11 +7,11 @@
 
 package = "Lanes"
 
-version = "3.6.3-1"
+version = "3.6.4-1"
 
 source= {
 	url= "git://github.com/LuaLanes/lanes.git",
-	branch= "v3.6.3"
+	branch= "v3.6.4"
 }
 
 description = {
