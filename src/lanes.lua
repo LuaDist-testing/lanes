@@ -71,52 +71,34 @@ lanes.configure = function( settings_)
 		shutdown_timeout = 0.25,
 		with_timers = true,
 		track_lanes = false,
+		demote_full_userdata = nil,
 		verbose_errors = false,
 		-- LuaJIT provides a thread-unsafe allocator by default, so we need to protect it when used in parallel lanes
 		protect_allocator = (jit and jit.version) and true or false
 	}
+	local boolean_param_checker = function( val_)
+		-- non-'boolean-false' should be 'boolean-true' or nil
+		return val_ and (val_ == true) or true
+	end
 	local param_checkers =
 	{
-		nb_keepers = function( _val)
+		nb_keepers = function( val_)
 			-- nb_keepers should be a number > 0
-			return type( _val) == "number" and _val > 0
+			return type( val_) == "number" and val_ > 0
 		end,
-		with_timers = function( _val)
-			-- with_timers may be nil or boolean
-			if _val then
-				return type( _val) == "boolean"
-			else
-				return true -- _val is either false or nil
-			end
-		end,
-		protect_allocator = function( _val)
-			-- protect_allocator may be nil or boolean
-			if _val then
-				return type( _val) == "boolean"
-			else
-				return true -- _val is either false or nil
-			end
-		end,
-		on_state_create = function( _val)
+		with_timers = boolean_param_checker,
+		protect_allocator = boolean_param_checker,
+		on_state_create = function( val_)
 			-- on_state_create may be nil or a function
-			return _val and type( _val) == "function" or true
+			return val_ and type( val_) == "function" or true
 		end,
-		shutdown_timeout = function( _val)
+		shutdown_timeout = function( val_)
 			-- shutdown_timeout should be a number >= 0
-			return type( _val) == "number" and _val >= 0
+			return type( val_) == "number" and val_ >= 0
 		end,
-		track_lanes = function( _val)
-			-- track_lanes may be nil or boolean
-			return _val and type( _val) == "boolean" or true
-		end,
-		verbose_errors = function( _val)
-			-- verbose_errors may be nil or boolean
-			if _val then
-				return type( _val) == "boolean"
-			else
-				return true -- _val is either false or nil
-			end
-		end
+		track_lanes = boolean_param_checker,
+		demote_full_userdata = boolean_param_checker,
+		verbose_errors = boolean_param_checker
 	}
 
 	local params_checker = function( settings_)
@@ -204,7 +186,7 @@ end
 --         "math,os": math + os + base libraries (named ones + base)
 --         "*":     all standard libraries available
 --
--- 'opt': .priority:  int (-2..+2) smaller is lower priority (0 = default)
+-- 'opt': .priority:  int (-3..+3) smaller is lower priority (0 = default)
 --
 --	      .cancelstep: bool | uint
 --            false: cancellation check only at pending Linda operations
@@ -315,7 +297,7 @@ local function gen( ... )
     -- Lane generator
     --
     return function(...)
-        return thread_new( func, libs, settings.on_state_create, cs, prio, g_tbl, package_tbl, required, ...)     -- args
+        return thread_new( func, libs, cs, prio, g_tbl, package_tbl, required, ...)     -- args
     end
 end
 
@@ -614,28 +596,42 @@ end -- settings.with_timers
 -- acquire (+M) and release (-M). For binary locks, use M==1.
 --
 -- PUBLIC LANES API
-local function genlock( linda, key, N )
-    linda:limit(key,N)
-    linda:set(key,nil)  -- clears existing data
+local genlock = function( linda, key, N)
+	linda:limit( key, N)
+	linda:set( key, nil)  -- clears existing data
 
-    --
-    -- [true [, ...]= trues(uint)
-    --
-    local function trues(n)
-        if n>0 then return true,trues(n-1) end
-    end
+	--
+	-- [true [, ...]= trues(uint)
+	--
+	local function trues( n)
+		if n > 0 then
+			return true, trues( n - 1)
+		end
+	end
 
-    return
-    function(M)
-        if M>0 then
-            -- 'nil' timeout allows 'key' to be numeric
-            linda:send( nil, key, trues(M) )    -- suspends until been able to push them
-        else
-            for i=1,-M do
-                linda:receive( key )
-            end
-        end
-    end
+	-- use an optimized version for case N == 1
+	return (N == 1) and
+	function( M, mode_)
+		local timeout = (mode_ == "try") and 0 or nil
+		if M > 0 then
+			-- 'nil' timeout allows 'key' to be numeric
+			return linda:send( timeout, key, true)    -- suspends until been able to push them
+		else
+			local k = linda:receive( nil, key)
+			return k and true or false
+		end
+	end
+	or
+	function( M, mode_)
+		local timeout = (mode_ == "try") and 0 or nil
+		if M > 0 then
+			-- 'nil' timeout allows 'key' to be numeric
+			return linda:send( timeout, key, trues(M))    -- suspends until been able to push them
+		else
+			local k = linda:receive( nil, linda.batched, key, -M)
+			return k and true or false
+		end
+	end
 end
 
 
@@ -669,6 +665,7 @@ end
 	lanes.cancel_error = core.cancel_error
 	lanes.nameof = core.nameof
 	lanes.threads = core.threads or function() error "lane tracking is not available" end -- core.threads isn't registered if settings.track_lanes is false
+	lanes.set_thread_priority = core.set_thread_priority
 	lanes.timer = timer
 	lanes.timer_lane = timer_lane
 	lanes.timers = timers

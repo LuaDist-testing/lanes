@@ -32,10 +32,25 @@ void luaL_requiref (lua_State* L, const char* modname, lua_CFunction openf, int 
 
 // wrap Lua 5.2 calls under Lua 5.1 API when it is simpler that way
 #if LUA_VERSION_NUM == 502
+#ifndef lua_equal // already defined when compatibility is active in luaconf.h
 #define lua_equal( L, a, b) lua_compare( L, a, b, LUA_OPEQ)
+#endif // lua_equal
+#ifndef lua_lessthan // already defined when compatibility is active in luaconf.h
 #define lua_lessthan( L, a, b) lua_compare( L, a, b, LUA_OPLT)
+#endif // lua_lessthan
 #define luaG_registerlibfuncs( L, _funcs) luaL_setfuncs( L, _funcs, 0)
 #endif // LUA_VERSION_NUM == 502
+
+// For some reason, LuaJIT 64bits doesn't support lua_newstate()
+// If you build specifically for this situation, change value to 0
+#define PROPAGATE_ALLOCF 1
+#if PROPAGATE_ALLOCF
+#define PROPAGATE_ALLOCF_PREP( L) void* allocUD; lua_Alloc allocF = lua_getallocf( L, &allocUD)
+#define PROPAGATE_ALLOCF_ALLOC() lua_newstate( allocF, allocUD)
+#else // PROPAGATE_ALLOCF
+#define PROPAGATE_ALLOCF_PREP( L)
+#define PROPAGATE_ALLOCF_ALLOC() luaL_newstate()
+#endif // PROPAGATE_ALLOCF
 
 #define USE_DEBUG_SPEW 0
 #if USE_DEBUG_SPEW
@@ -70,7 +85,7 @@ extern int debugspew_indent_depth;
 	} while( 0)
   #define STACK_END(L,change)  STACK_MID(L,change); }
 
-  #define STACK_DUMP(L)    luaG_dump(L);
+  #define STACK_DUMP( L)    luaG_dump( L)
 #endif
 #define ASSERT_L(c) _ASSERT_L(L,c)
 
@@ -83,7 +98,7 @@ extern int debugspew_indent_depth;
 
 void luaG_dump( lua_State* L );
 
-lua_State* luaG_newstate( lua_State* _from, int const _on_state_create, char const* libs);
+lua_State* luaG_newstate( lua_State* _from, char const* libs);
 void luaG_copy_one_time_settings( lua_State* L, lua_State* L2, char const* name_);
 
 typedef struct {
@@ -114,12 +129,13 @@ extern MUTEX_T mtid_lock;
 
 void populate_func_lookup_table( lua_State* L, int _i, char const* _name);
 void serialize_require( lua_State *L);
+int initialize_on_state_create( lua_State *L);
 extern MUTEX_T require_cs;
 
 // for verbose errors
 extern bool_t GVerboseErrors;
 
-char const* const CONFIG_REGKEY;
-char const* const LOOKUP_REGKEY;
+extern char const* const CONFIG_REGKEY;
+extern char const* const LOOKUP_REGKEY;
 
 #endif // TOOLS_H

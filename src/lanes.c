@@ -1,6 +1,6 @@
 /*
  * LANES.C                              Copyright (c) 2007-08, Asko Kauppi
- *                                      Copyright (C) 2009-13, Benoit Germain
+ *                                      Copyright (C) 2009-14, Benoit Germain
  *
  * Multithreading in Lua.
  * 
@@ -35,10 +35,10 @@
  *
  * Defines:
  *      -DLINUX_SCHED_RR: all threads are lifted to SCHED_RR category, to
- *          allow negative priorities (-2,-1) be used. Even without this,
+ *          allow negative priorities [-3,-1] be used. Even without this,
  *          using priorities will require 'sudo' privileges on Linux.
  *
- *		-DUSE_PTHREAD_TIMEDJOIN: use 'pthread_timedjoin_np()' for waiting
+ *      -DUSE_PTHREAD_TIMEDJOIN: use 'pthread_timedjoin_np()' for waiting
  *          for threads with a timeout. This changes the thread cleanup
  *          mechanism slightly (cleans up at the join, not once the thread
  *          has finished). May or may not be a good idea to use it.
@@ -52,13 +52,13 @@
  *      ...
  */
 
-char const* VERSION = "3.7.0";
+char const* VERSION = "3.7.7";
 
 /*
 ===============================================================================
 
 Copyright (C) 2007-10 Asko Kauppi <akauppi@gmail.com>
-              2011-13 Benoit Germain <bnt.germain@gmail.com>
+              2011-14 Benoit Germain <bnt.germain@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -113,7 +113,7 @@ THE SOFTWARE.
 *
 * TBD: The full stack feature does not seem to work (try 'make error').
 */
-#define ERROR_FULL_STACK
+#define ERROR_FULL_STACK 1 // must be either 0 or 1 as we do some index arithmetics with it!
 
 /*
  * Lane cancellation request modes
@@ -194,6 +194,11 @@ static void cancel_error( lua_State*L );
 
 #define CANCEL_TEST_KEY ((void*)cancel_test)    // used as registry key
 #define CANCEL_ERROR ((void*)cancel_error)      // 'cancel_error' sentinel
+
+#if ERROR_FULL_STACK
+static int lane_error( lua_State* L);
+#define STACK_TRACE_KEY ((void*)lane_error)     // used as registry key
+#endif // ERROR_FULL_STACK
 
 /*
 * registry[FINALIZER_REG_KEY] is either nil (no finalizers) or a table
@@ -415,7 +420,8 @@ LUAG_FUNC( linda_send)
 	STACK_GROW(L, 1);
 	{
 		struct s_Keeper* K = keeper_acquire( linda);
-		lua_State* KL = K->L;    // need to do this for 'STACK_CHECK'
+		lua_State* KL = K ? K->L : NULL; // need to do this for 'STACK_CHECK'
+		if( KL == NULL) return 0;
 		STACK_CHECK( KL);
 		for( ;;)
 		{
@@ -423,6 +429,7 @@ LUAG_FUNC( linda_send)
 			pushed = keeper_call( KL, KEEPER_API( send), L, linda, key_i);
 			if( pushed < 0)
 			{
+				ret = FALSE;
 				break;
 			}
 			ASSERT_L( pushed == 1);
@@ -578,6 +585,7 @@ LUAG_FUNC( linda_receive)
 
 	{
 		struct s_Keeper *K = keeper_acquire( linda);
+		if( K == NULL) return 0;
 		for( ;;)
 		{
 			// all arguments of receive() but the first are passed to the keeper's receive function
@@ -664,7 +672,7 @@ LUAG_FUNC( linda_receive)
 
 
 /*
-* = linda_set( linda_ud, key_num|str|bool|lightuserdata [,value] )
+* [true] = linda_set( linda_ud, key_num|str|bool|lightuserdata [,value] )
 *
 * Set a value to Linda.
 * TODO: what do we do if we set to non-nil and limit is 0?
@@ -674,6 +682,7 @@ LUAG_FUNC( linda_receive)
 LUAG_FUNC( linda_set)
 {
 	struct s_Linda *linda = lua_toLinda( L, 1);
+	int pushed;
 	bool_t has_value = !lua_isnil( L, 3);
 	luaL_argcheck( L, linda, 1, "expected a linda object!");
 	luaL_argcheck( L, lua_gettop( L) <= 3, 4, "too many arguments");
@@ -682,30 +691,31 @@ LUAG_FUNC( linda_set)
 	check_key_types( L, 2, 2);
 
 	{
-		int pushed;
-		struct s_Keeper *K = keeper_acquire( linda);
+		struct s_Keeper* K = keeper_acquire( linda);
+		if( K == NULL) return 0;
 		// no nil->sentinel toggling, we really clear the linda contents for the given key with a set()
 		pushed = keeper_call( K->L, KEEPER_API( set), L, linda, 2);
 		if( pushed >= 0) // no error?
 		{
-			ASSERT_L( pushed == 0);
+			ASSERT_L( pushed == 0 || pushed == 1);
 
-			/* Set the signal from within 'K' locking.
-			*/
 			if( has_value)
 			{
-				SIGNAL_ALL( &linda->write_happened);
+				// we put some data in the slot, tell readers that they should wake
+				SIGNAL_ALL( &linda->write_happened); // To be done from within the 'K' locking area
+			}
+			if( pushed == 1)
+			{
+				// the key was full, but it is no longer the case, tell writers they should wake
+				ASSERT_L( lua_type( L, -1) == LUA_TBOOLEAN && lua_toboolean( L, -1) == 1);
+				SIGNAL_ALL( &linda->read_happened); // To be done from within the 'K' locking area
 			}
 		}
 		keeper_release( K);
-		// must trigger error after keeper state has been released
-		if( pushed < 0)
-		{
-			return luaL_error( L, "tried to copy unsupported types");
-		}
 	}
 
-	return 0;
+	// must trigger any error after keeper state has been released
+	return (pushed < 0) ? luaL_error( L, "tried to copy unsupported types") : pushed;
 }
 
 
@@ -716,7 +726,7 @@ LUAG_FUNC( linda_set)
  */
 LUAG_FUNC( linda_count)
 {
-	struct s_Linda *linda= lua_toLinda( L, 1);
+	struct s_Linda* linda = lua_toLinda( L, 1);
 	int pushed;
 
 	luaL_argcheck( L, linda, 1, "expected a linda object!");
@@ -724,7 +734,8 @@ LUAG_FUNC( linda_count)
 	check_key_types( L, 2, lua_gettop( L));
 
 	{
-		struct s_Keeper *K = keeper_acquire( linda);
+		struct s_Keeper* K = keeper_acquire( linda);
+		if( K == NULL) return 0;
 		pushed = keeper_call( K->L, KEEPER_API( count), L, linda, 2);
 		keeper_release( K);
 		if( pushed < 0)
@@ -752,14 +763,15 @@ LUAG_FUNC( linda_get)
 	check_key_types( L, 2, 2);
 
 	{
-		struct s_Keeper *K = keeper_acquire( linda);
+		struct s_Keeper* K = keeper_acquire( linda);
+		if( K == NULL) return 0;
 		pushed = keeper_call( K->L, KEEPER_API( get), L, linda, 2);
-		ASSERT_L( pushed==0 || pushed==1 );
+		ASSERT_L( pushed == 0 || pushed == 1);
 		if( pushed > 0)
 		{
 			keeper_toggle_nil_sentinels( L, lua_gettop( L) - pushed, 0);
 		}
-		keeper_release(K);
+		keeper_release( K);
 		// must trigger error after keeper state has been released
 		if( pushed < 0)
 		{
@@ -772,16 +784,19 @@ LUAG_FUNC( linda_get)
 
 
 /*
-* = linda_limit( linda_ud, key_num|str|bool|lightuserdata, uint [, ...] )
+* [true] = linda_limit( linda_ud, key_num|str|bool|lightuserdata, int)
 *
-* Set limits to 1 or more Linda keys.
+* Set limit to 1 Linda keys.
+* Optionally wake threads waiting to write on the linda, in case the limit enables them to do so
 */
 LUAG_FUNC( linda_limit)
 {
-	struct s_Linda* linda= lua_toLinda( L, 1 );
+	struct s_Linda* linda = lua_toLinda( L, 1);
+	int pushed;
+	bool_t wake_writers = FALSE;
 
+	// make sure we got 3 arguments: the linda, a key and a limit
 	luaL_argcheck( L, linda, 1, "expected a linda object!");
-	// make sure we got a key and a limit
 	luaL_argcheck( L, lua_gettop( L) == 3, 2, "wrong number of arguments");
 	// make sure we got a numeric limit
 	luaL_checknumber( L, 3);
@@ -790,17 +805,18 @@ LUAG_FUNC( linda_limit)
 
 	{
 		struct s_Keeper* K = keeper_acquire( linda);
-		int pushed = keeper_call( K->L, KEEPER_API( limit), L, linda, 2);
-		ASSERT_L( pushed <= 0); // either error or no return values
-		keeper_release( K);
-		// must trigger error after keeper state has been released
-		if( pushed < 0)
+		if( K == NULL) return 0;
+		pushed = keeper_call( K->L, KEEPER_API( limit), L, linda, 2);
+		ASSERT_L( pushed == 0 || pushed == 1); // no error, optional boolean value saying if we should wake blocked writer threads
+		if( pushed == 1)
 		{
-			return luaL_error( L, "tried to copy unsupported types");
+			ASSERT_L( lua_type( L, -1) == LUA_TBOOLEAN && lua_toboolean( L, -1) == 1);
+			SIGNAL_ALL( &linda->read_happened); // To be done from within the 'K' locking area
 		}
+		keeper_release( K);
 	}
-
-	return 0;
+	// propagate pushed boolean if any
+	return pushed;
 }
 
 
@@ -1084,7 +1100,7 @@ LUAG_FUNC( set_finalizer )
 //---
 // Run finalizers - if any - with the given parameters
 //
-// If 'rc' is nonzero, error message and stack index are available as:
+// If 'rc' is nonzero, error message and stack index (the latter only when ERROR_FULL_STACK == 1) are available as:
 //      [-1]: stack trace (table)
 //      [-2]: error message (any type)
 //
@@ -1094,56 +1110,70 @@ LUAG_FUNC( set_finalizer )
 //
 // TBD: should we add stack trace on failing finalizer, wouldn't be hard..
 //
-static int run_finalizers( lua_State*L, int lua_rc )
+static int run_finalizers( lua_State* L, int lua_rc)
 {
-    unsigned error_index, tbl_index;
-    unsigned n;
-    int rc= 0;
-    
-    if (!push_registry_table(L, FINALIZER_REG_KEY, FALSE /*don't create one*/))
-        return 0;   // no finalizers
+	int error_index, finalizers_index;
+	int n;
+	int err_handler_index = 0;
+	int rc = 0;                                                                     // [err_msg {stack_trace}]?
 
-    tbl_index= lua_gettop(L);
-    error_index= (lua_rc!=0) ? tbl_index-2 : 0;   // absolute indices
+	if( !push_registry_table( L, FINALIZER_REG_KEY, FALSE))                         // [err_msg {stack_trace}]? {func [, ...]}?
+	{
+		return 0;   // no finalizers
+	}
 
-    STACK_GROW(L,4);
+	STACK_GROW( L, 5);
 
-    // [-1]: { func [, ...] }
-    //
-    for( n = (unsigned int)lua_rawlen( L, -1); n > 0; -- n)
-    {
-        unsigned args= 0;
-        lua_pushinteger( L,n );
-        lua_gettable( L, -2 );
-        
-        // [-1]: function
-        // [-2]: finalizers table
+	finalizers_index = lua_gettop( L);
 
-        if (error_index) {
-            lua_pushvalue( L, error_index );
-            lua_pushvalue( L, error_index+1 );  // stack trace
-            args= 2;
-        }
+#if ERROR_FULL_STACK
+	lua_pushcfunction( L, lane_error);                                              // [err_msg {stack_trace}]? {func [, ...]}? lane_error
+	err_handler_index = lua_gettop( L);
+#endif // ERROR_FULL_STACK
+	error_index = (lua_rc != LUA_OK) ? finalizers_index - (1 + ERROR_FULL_STACK) : 0;
 
-        rc= lua_pcall( L, args, 0 /*retvals*/, 0 /*no errfunc*/ );
-            //
-            // LUA_ERRRUN / LUA_ERRMEM
-    
-        if( rc != LUA_OK)
-        {
-            // [-1]: error message
-            //
-            // If one finalizer fails, don't run the others. Return this
-            // as the 'real' error, preceding that we could have had (or not)
-            // from the actual code.
-            //
-            break;
-        }
-    }
-    
-    lua_remove(L,tbl_index);   // take finalizer table out of stack
+	for( n = (int) lua_rawlen( L, finalizers_index); n > 0; -- n)
+	{
+		int args = 0;
+		lua_pushinteger( L, n);                                                       // [err_msg {stack_trace}]? {func [, ...]}? lane_error n
+		lua_gettable( L, finalizers_index);                                           // [err_msg {stack_trace}]? {func [, ...]}? lane_error finalizer
+		ASSERT_L( lua_isfunction( L, -1));
+		if( error_index)
+		{
+			//char const* err_msg = lua_tostring( L, error_index);
+			lua_pushvalue( L, error_index);                                             // [err_msg {stack_trace}]? {func [, ...]}? lane_error finalizer err_msg
+#if ERROR_FULL_STACK
+			lua_pushvalue( L, error_index + 1);                                         // [err_msg {stack_trace}]? {func [, ...]}? lane_error finalizer err_msg {stack_trace}
+#endif // ERROR_FULL_STACK
+			args = 1 + ERROR_FULL_STACK;
+		}
 
-    return rc;
+		rc = lua_pcall( L, args, 0, err_handler_index);                               // [err_msg {stack_trace}]? {func [, ...]}? lane_error err_msg2?
+		//
+		// LUA_ERRRUN / LUA_ERRMEM
+
+		if( rc != LUA_OK)
+		{
+#if ERROR_FULL_STACK
+			lua_pushlightuserdata( L, STACK_TRACE_KEY);                                 // [err_msg {stack_trace}]? {func [, ...]}? lane_error err_msg2 STACK_TRACE_KEY
+			lua_gettable( L, LUA_REGISTRYINDEX);                                        // [err_msg {stack_trace}]? {func [, ...]}? lane_error err_msg2 {stack_trace2}
+#endif // ERROR_FULL_STACK
+
+			// If one finalizer fails, don't run the others. Return this
+			// as the 'real' error, replacing what we could have had (or not)
+			// from the actual code.
+			//
+			break;
+		}
+	}
+
+	// remove error handler function (if any) and finalizers table from the stack
+#if ERROR_FULL_STACK
+	lua_remove( L, err_handler_index);                                              // [err_msg {stack_trace}]? {func [, ...]}? err_msg2 {stack_trace2}
+#endif // ERROR_FULL_STACK
+	lua_remove( L, finalizers_index);                                               // [err_msg {stack_trace}]? err_msg2 {stack_trace2}
+
+	return rc;
 }
 
 /*
@@ -1177,7 +1207,7 @@ typedef enum
 	CR_Killed
 } cancel_result;
 
-static cancel_result thread_cancel( struct s_lane *s, double secs, bool_t force)
+static cancel_result thread_cancel( lua_State* L, struct s_lane* s, double secs, bool_t force, double waitkill_timeout_)
 {
 	cancel_result result;
 
@@ -1219,6 +1249,15 @@ static cancel_result thread_cancel( struct s_lane *s, double secs, bool_t force)
 				// PThread seems to have).
 				//
 				THREAD_KILL( &s->thread);
+#if THREADAPI == THREADAPI_PTHREAD
+				// pthread: make sure the thread is really stopped!
+				// note that this may block forever if the lane doesn't call a cancellation point and pthread doesn't honor PTHREAD_CANCEL_ASYNCHRONOUS
+				result = THREAD_WAIT( &s->thread, waitkill_timeout_, &s->done_signal, &s->done_lock, &s->status);
+				if( result == CR_Timeout)
+				{
+					return luaL_error( L, "force-killed lane failed to terminate within %f second%s", waitkill_timeout_, waitkill_timeout_ > 1 ? "s" : "");
+				}
+#endif // THREADAPI == THREADAPI_PTHREAD
 				s->mstatus = KILLED;     // mark 'gc' to wait for it
 				// note that s->status value must remain to whatever it was at the time of the kill
 				// because we need to know if we can lua_close() the Lua State or not.
@@ -1337,7 +1376,7 @@ static int selfdestruct_gc( lua_State* L)
 			while( s != SELFDESTRUCT_END)
 			{
 				// attempt a regular unforced hard cancel with a small timeout
-				bool_t cancelled = THREAD_ISNULL( s->thread) || thread_cancel( s, 0.0001, FALSE);
+				bool_t cancelled = THREAD_ISNULL( s->thread) || thread_cancel( L, s, 0.0001, FALSE, 0.0);
 				// if we failed, and we know the thread is waiting on a linda
 				if( cancelled == FALSE && s->status == WAITING && s->waiting_on != NULL)
 				{
@@ -1577,9 +1616,8 @@ LUAG_FUNC( set_singlethreaded)
 *     implement a Lanes-specific 'pcall' of our own that does this). TBD!!! :)
 *       --AKa 22-Jan-2009
 */
-#ifdef ERROR_FULL_STACK
+#if ERROR_FULL_STACK
 
-# define STACK_TRACE_KEY ((void*)lane_error)     // used as registry key
 # define EXTENDED_STACK_TRACE_KEY ((void*)LG_set_error_reporting)     // used as registry key
 
 LUAG_FUNC( set_error_reporting)
@@ -1619,10 +1657,10 @@ static int lane_error( lua_State* L)
 
 	// Don't do stack survey for cancelled lanes.
 	//
-#if 1
 	if( lua_touserdata( L, 1) == CANCEL_ERROR)
+	{
 		return 1;   // just pass on
-#endif
+	}
 
 	lua_pushlightuserdata( L, EXTENDED_STACK_TRACE_KEY);
 	lua_gettable( L, LUA_REGISTRYINDEX);
@@ -1681,7 +1719,7 @@ static int lane_error( lua_State* L)
 	}
 
 	lua_pushlightuserdata( L, STACK_TRACE_KEY);
-	lua_insert( L ,-2);
+	lua_insert( L, -2);
 	lua_settable( L, LUA_REGISTRYINDEX);
 
 	assert( lua_gettop( L) == 1);
@@ -1703,6 +1741,20 @@ LUAG_FUNC( set_debug_threadname)
 	THREAD_SETNAME( s->debug_name);
 	// to see VM name in Decoda debugger Virtual Machine window
 	lua_setglobal( L, "decoda_name");                              //
+	return 0;
+}
+
+LUAG_FUNC( set_thread_priority)
+{
+	int const prio = luaL_checkint( L, 1);
+	// public Lanes API accepts a generic range -3/+3
+	// that will be remapped into the platform-specific scheduler priority scheme
+	// On some platforms, -3 is equivalent to -2 and +3 to +2
+	if( prio < THREAD_PRIO_MIN || prio > THREAD_PRIO_MAX)
+	{
+		return luaL_error( L, "priority out of range: %d..+%d (%d)", THREAD_PRIO_MIN, THREAD_PRIO_MAX, prio);
+	}
+	THREAD_SET_PRIORITY( prio);
 	return 0;
 }
 
@@ -1739,42 +1791,57 @@ static char const* get_errcode_name( int _code)
 }
 #endif // USE_DEBUG_SPEW
 
+#if THREADWAIT_METHOD == THREADWAIT_CONDVAR // implies THREADAPI == THREADAPI_PTHREAD
+static void thread_cleanup_handler( void* opaque)
+{
+	struct s_lane* s= (struct s_lane*) opaque;
+	MUTEX_LOCK( &s->done_lock);
+	s->status = CANCELLED;
+	SIGNAL_ONE( &s->done_signal);   // wake up master (while 's->done_lock' is on)
+	MUTEX_UNLOCK( &s->done_lock);
+}
+#endif // THREADWAIT_METHOD == THREADWAIT_CONDVAR
+
 //---
 static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
 {
     struct s_lane *s= (struct s_lane *)vs;
     int rc, rc2;
     lua_State*L= s->L;
-
 #if HAVE_LANE_TRACKING
     if( tracking_first)
     {
         tracking_add( s);
     }
 #endif // HAVE_LANE_TRACKING
-
-   s->status= RUNNING;  // PENDING -> RUNNING
+    THREAD_MAKE_ASYNCH_CANCELLABLE();
+    THREAD_CLEANUP_PUSH( thread_cleanup_handler, s);
+    s->status= RUNNING;  // PENDING -> RUNNING
 
     // Tie "set_finalizer()" to the state
     //
     lua_pushcfunction( L, LG_set_finalizer );
-    lua_setglobal( L, "set_finalizer" );
+    populate_func_lookup_table( L, -1, "set_finalizer");
+    lua_setglobal( L, "set_finalizer");
 
     // Tie "set_debug_threadname()" to the state
     //
     lua_pushlightuserdata( L, s);
     lua_pushcclosure( L, LG_set_debug_threadname, 1);
+    populate_func_lookup_table( L, -1, "set_debug_threadname");
     lua_setglobal( L, "set_debug_threadname" );
 
     // Tie "cancel_test()" to the state
     //
     lua_pushcfunction( L, LG_cancel_test);
+    populate_func_lookup_table( L, -1, "cancel_test");
     lua_setglobal( L, "cancel_test");
 
-#ifdef ERROR_FULL_STACK
+#if ERROR_FULL_STACK
     // Tie "set_error_reporting()" to the state
     //
     lua_pushcfunction( L, LG_set_error_reporting);
+    populate_func_lookup_table( L, -1, "set_error_reporting");
     lua_setglobal( L, "set_error_reporting");
 
     STACK_GROW( L, 1 );
@@ -1810,17 +1877,17 @@ static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
         // it through to the master.
     }
 
-#else
+#else // ERROR_FULL_STACK == 0
     // This code does not use 'lane_error'
     //
     // [1]: function to run
     // [2..top]: parameters
     //
-    rc= lua_pcall( L, lua_gettop(L)-1, LUA_MULTRET, 0 /*no error handler*/ );
+    rc = lua_pcall( L, lua_gettop( L) - 1, LUA_MULTRET, 0); // no error handler
         // LUA_OK(0): no error
         // LUA_ERRRUN(2): a runtime error (error pushed on stack)
         // LUA_ERRMEM(4): memory allocation error
-#endif
+#endif // ERROR_FULL_STACK
 
     DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "Lane %p body: %s (%s)\n" INDENT_END, L, get_errcode_name( rc), (lua_touserdata(L,1)==CANCEL_ERROR) ? "cancelled" : lua_typename( L, lua_type( L, 1))));
     //STACK_DUMP(L);
@@ -1828,21 +1895,19 @@ static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
     //
     rc2 = run_finalizers( L, rc);
     DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "Lane %p finalizer: %s\n" INDENT_END, L, get_errcode_name( rc2)));
-    if( rc2 != LUA_OK)
+    if( rc2 != LUA_OK) // Error within a finalizer!
     {
-        // Error within a finalizer!  
-        // 
-        // [-1]: error message
-
-        rc= rc2;    // we're overruling the earlier script error or normal return
-
-        lua_insert( L,1 );  // make error message [1]
-        lua_settop( L,1 );  // remove all rest
-
-        // Place an empty stack table just to keep the API simple (always when
-        // there's an error, there's also stack table - though it may be empty).
-        //
-        lua_newtable(L);
+        rc = rc2;    // we're overruling the earlier script error or normal return
+        // the finalizer generated an error, the error message [and stack trace] are pushed on the stack
+        // remove the rest so that only the error message [and stack trace] remain on the stack
+#if ERROR_FULL_STACK
+        lua_insert( L, 1);
+        lua_insert( L, 1);
+        lua_settop( L, 2);
+#else // ERROR_FULL_STACK == 0
+        lua_insert( L, 1);
+        lua_settop( L, 1);
+#endif // ERROR_FULL_STACK
     }
     s->waiting_on = NULL; // just in case
     if( selfdestruct_remove( s)) // check and remove (under lock!)
@@ -1868,7 +1933,7 @@ static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
                     : ERROR_ST;
 
         // Posix no PTHREAD_TIMEDJOIN:
-        // 		'done_lock' protects the -> DONE|ERROR_ST|CANCELLED state change
+        // 'done_lock' protects the -> DONE|ERROR_ST|CANCELLED state change
         //
 #if THREADWAIT_METHOD == THREADWAIT_CONDVAR
         MUTEX_LOCK( &s->done_lock);
@@ -1881,6 +1946,7 @@ static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
         MUTEX_UNLOCK( &s->done_lock);
 #endif // THREADWAIT_METHOD == THREADWAIT_CONDVAR
     }
+    THREAD_CLEANUP_POP( FALSE);
     return 0;   // ignored
 }
 
@@ -1891,17 +1957,17 @@ static THREAD_RETURN_T THREAD_CALLCONV lane_main( void *vs)
 LUAG_FUNC( require)
 {
 	char const* name = lua_tostring( L, 1);
+	int const nargs = lua_gettop( L);
 	STACK_CHECK( L);
 	DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "lanes.require %s BEGIN\n" INDENT_END, name));
 	DEBUGSPEW_CODE( ++ debugspew_indent_depth);
 	lua_pushvalue( L, lua_upvalueindex(1));   // "name" require
-	lua_pushvalue( L, 1);                     // "name" require "name"
-	lua_call( L, 1, 1);                       // "name" module
+	lua_insert( L, 1);                        // require "name"
+	lua_call( L, nargs, 1);                   // module
 	populate_func_lookup_table( L, -1, name);
-	lua_remove( L, -2);                       // module
 	DEBUGSPEW_CODE( fprintf( stderr, INDENT_BEGIN "lanes.require %s END\n" INDENT_END, name));
 	DEBUGSPEW_CODE( -- debugspew_indent_depth);
-	STACK_END( L, 1);
+	STACK_END( L, 0);
 	return 1;
 }
 
@@ -1924,16 +1990,18 @@ LUAG_FUNC( thread_new)
 	struct s_lane** ud;
 
 	char const* libs = lua_tostring( L, 2);
-	int const on_state_create = lua_isfunction( L, 3) ? 3 : 0;
-	uint_t cs = luaG_optunsigned( L, 4, 0);
-	int prio = (int) luaL_optinteger( L, 5, 0);
-	uint_t glob = lua_isnoneornil( L, 6) ? 0 : 6;
-	uint_t package = lua_isnoneornil( L,7) ? 0 : 7;
-	uint_t required = lua_isnoneornil( L, 8) ? 0 : 8;
+	uint_t cs = luaG_optunsigned( L, 3, 0);
+	int const prio = (int) luaL_optinteger( L, 4, 0);
+	uint_t glob = lua_isnoneornil( L, 5) ? 0 : 5;
+	uint_t package = lua_isnoneornil( L, 6) ? 0 : 6;
+	uint_t required = lua_isnoneornil( L, 7) ? 0 : 7;
 
-#define FIXED_ARGS 8
+#define FIXED_ARGS 7
 	uint_t args = lua_gettop(L) - FIXED_ARGS;
 
+	// public Lanes API accepts a generic range -3/+3
+	// that will be remapped into the platform-specific scheduler priority scheme
+	// On some platforms, -3 is equivalent to -2 and +3 to +2
 	if( prio < THREAD_PRIO_MIN || prio > THREAD_PRIO_MAX)
 	{
 		return luaL_error( L, "Priority out of range: %d..+%d (%d)", THREAD_PRIO_MIN, THREAD_PRIO_MAX, prio);
@@ -1945,7 +2013,7 @@ LUAG_FUNC( thread_new)
 
 	// populate with selected libraries at the same time
 	//
-	L2 = luaG_newstate( L, on_state_create, libs);
+	L2 = luaG_newstate( L, libs);
 
 	STACK_GROW( L, 2);
 	STACK_GROW( L2, 3);
@@ -2226,6 +2294,7 @@ LUAG_FUNC( thread_gc)
 	return 0;
 }
 
+// lane_h:cancel( [timeout,] force[, forcekill_timeout])
 LUAG_FUNC( thread_cancel)
 {
 	if( lua_gettop( L) < 1 || lua_type( L, 1) != LUA_TUSERDATA)
@@ -2236,9 +2305,8 @@ LUAG_FUNC( thread_cancel)
 	{
 		struct s_lane* s = lua_toLane( L, 1);
 		double secs = 0.0;
-		uint_t force_i = 2;
-		cancel_result result;
-		bool_t force;
+		int force_i = 2;
+		int forcekill_timeout_i = 3;
 
 		if( lua_isnumber( L, 2))
 		{
@@ -2248,30 +2316,34 @@ LUAG_FUNC( thread_cancel)
 				return luaL_error( L, "can't force a soft cancel");
 			}
 			++ force_i;
+			++ forcekill_timeout_i;
 		}
 		else if( lua_isnil( L, 2))
 		{
 			++ force_i;
+			++ forcekill_timeout_i;
 		}
 
-		force = lua_toboolean( L, force_i);     // FALSE if nothing there
-
-		result = thread_cancel( s, secs, force);
-		switch( result)
 		{
+			bool_t force = lua_toboolean( L, force_i);     // FALSE if nothing there
+			double forcekill_timeout = luaL_optnumber( L, forcekill_timeout_i, 0.0);
+
+			switch( thread_cancel( L, s, secs, force, forcekill_timeout))
+			{
 			case CR_Timeout:
-			lua_pushboolean( L, 0);
-			lua_pushstring( L, "timeout");
-			return 2;
+				lua_pushboolean( L, 0);
+				lua_pushstring( L, "timeout");
+				return 2;
 
 			case CR_Cancelled:
-			lua_pushboolean( L, 1);
-			return 1;
-			
+				lua_pushboolean( L, 1);
+				return 1;
+
 			case CR_Killed:
-			lua_pushboolean( L, 0);
-			lua_pushstring( L, "killed");
-			return 2;
+				lua_pushboolean( L, 0);
+				lua_pushstring( L, "killed");
+				return 2;
+			}
 		}
 	}
 	// should never happen, only here to prevent the compiler from complaining of "not all control paths returning a value"
@@ -2317,7 +2389,7 @@ static int push_thread_status( lua_State*L, struct s_lane *s)
 //
 //  timeout:   returns nil
 //  done:      returns return values (0..N)
-//  error:     returns nil + error value + stack table
+//  error:     returns nil + error value [+ stack table]
 //  cancelled: returns nil
 //
 LUAG_FUNC( thread_join)
@@ -2361,11 +2433,11 @@ LUAG_FUNC( thread_join)
 
 			case ERROR_ST:
 			lua_pushnil( L);
-			if( luaG_inter_move( L2, L, 2, eLM_LaneBody) != 0)    // error message at [-2], stack trace at [-1]
+			if( luaG_inter_move( L2, L, 1 + ERROR_FULL_STACK, eLM_LaneBody) != 0)    // error message at [-2], stack trace at [-1]
 			{
 				return luaL_error( L, "tried to copy unsupported types");
 			}
-			ret= 3;
+			ret = 2 + ERROR_FULL_STACK;
 			break;
 
 			case CANCELLED:
@@ -2644,6 +2716,7 @@ static const struct luaL_Reg lanes_functions [] = {
     {"linda", LG_linda},
     {"now_secs", LG_now_secs},
     {"wakeup_conv", LG_wakeup_conv},
+    {"set_thread_priority", LG_set_thread_priority},
     {"nameof", luaG_nameof},
     {"set_singlethreaded", LG_set_singlethreaded},
     {NULL, NULL}
@@ -2656,6 +2729,8 @@ static const struct luaL_Reg lanes_functions [] = {
 */
 static void init_once_LOCKED( lua_State* L)
 {
+	initialize_on_state_create( L);
+
 	STACK_CHECK( L);
 
 	lua_getfield( L, 1, "verbose_errors");
@@ -2705,16 +2780,18 @@ static void init_once_LOCKED( lua_State* L)
 	//     be enabled also for Linux.
 	//
 #ifdef PLATFORM_LINUX
-	sudo= geteuid()==0;     // we are root?
+	sudo = (geteuid() == 0); // we are root?
 
 	// If lower priorities (-2..-1) are wanted, we need to lift the main
 	// thread to SCHED_RR and 50 (medium) level. Otherwise, we're always below 
 	// the launched threads (even -2).
 	//
 #ifdef LINUX_SCHED_RR
-	if (sudo) {
-		struct sched_param sp= {0}; sp.sched_priority= _PRIO_0;
-		PT_CALL( pthread_setschedparam( pthread_self(), SCHED_RR, &sp) );
+	if( sudo)
+	{
+		struct sched_param sp;
+		sp.sched_priority = _PRIO_0;
+		PT_CALL( pthread_setschedparam( pthread_self(), SCHED_RR, &sp));
 	}
 #endif // LINUX_SCHED_RR
 #endif // PLATFORM_LINUX
@@ -2919,33 +2996,60 @@ LUAG_FUNC( configure)
 	return 1;
 }
 
+#if defined PLATFORM_WIN32 && !defined NDEBUG
+#include <signal.h>
+#include <conio.h>
+
+void signal_handler( int signal)
+{
+	if( signal == SIGABRT)
+	{
+		_cprintf( "caught abnormal termination!");
+		abort();
+	}
+}
+
 // helper to have correct callstacks when crashing a Win32 running on 64 bits Windows
 // don't forget to toggle Debug/Exceptions/Win32 in visual Studio too!
+static volatile long s_ecoc_initCount = 0;
+static volatile int s_ecoc_go_ahead = 0;
 static void EnableCrashingOnCrashes( void)
-{ 
-#if defined PLATFORM_WIN32 && !defined NDEBUG
-	typedef BOOL (WINAPI *tGetPolicy)(LPDWORD lpFlags);
-	typedef BOOL (WINAPI *tSetPolicy)(DWORD dwFlags);
-	const DWORD EXCEPTION_SWALLOWING = 0x1;
-
-	HMODULE kernel32 = LoadLibraryA("kernel32.dll");
-	tGetPolicy pGetPolicy = (tGetPolicy)GetProcAddress(kernel32, "GetProcessUserModeExceptionPolicy");
-	tSetPolicy pSetPolicy = (tSetPolicy)GetProcAddress(kernel32, 	"SetProcessUserModeExceptionPolicy");
-	if( pGetPolicy && pSetPolicy)
+{
+	if( InterlockedCompareExchange( &s_ecoc_initCount, 1, 0) == 0)
 	{
-		DWORD dwFlags;
-		if( pGetPolicy( &dwFlags))
+		typedef BOOL (WINAPI* tGetPolicy)( LPDWORD lpFlags);
+		typedef BOOL (WINAPI* tSetPolicy)( DWORD dwFlags);
+		typedef void (* SignalHandlerPointer)( int);
+		SignalHandlerPointer previousHandler = signal( SIGABRT, signal_handler);
+		const DWORD EXCEPTION_SWALLOWING = 0x1;
+
+		HMODULE kernel32 = LoadLibraryA("kernel32.dll");
+		tGetPolicy pGetPolicy = (tGetPolicy)GetProcAddress(kernel32, "GetProcessUserModeExceptionPolicy");
+		tSetPolicy pSetPolicy = (tSetPolicy)GetProcAddress(kernel32, "SetProcessUserModeExceptionPolicy");
+		if( pGetPolicy && pSetPolicy)
 		{
-			// Turn off the filter
-			pSetPolicy( dwFlags & ~EXCEPTION_SWALLOWING);
+			DWORD dwFlags;
+			if( pGetPolicy( &dwFlags))
+			{
+				// Turn off the filter
+				pSetPolicy( dwFlags & ~EXCEPTION_SWALLOWING);
+			}
 		}
+
+		s_ecoc_go_ahead = 1; // let others pass
 	}
-#endif // PLATFORM_WIN32
+	else
+	{
+		while( !s_ecoc_go_ahead) { Sleep(1); } // changes threads
+	}
 }
+#endif // PLATFORM_WIN32
 
 int LANES_API luaopen_lanes_core( lua_State* L)
 {
+#if defined PLATFORM_WIN32 && !defined NDEBUG
 	EnableCrashingOnCrashes();
+#endif // defined PLATFORM_WIN32 && !defined NDEBUG
 
 	STACK_GROW( L, 4);
 	STACK_CHECK( L);
