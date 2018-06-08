@@ -7,6 +7,7 @@
 --      <http://luarocks.org/en/Rockspec_format>
 --
 -- History:
+--  PLM 13-Nov-2009: 2.0.3-2. Building on windows made easier. Also usurping Asko in maintainance. And updating homepage.
 --  HHM 19-Oct-2009: 2.0.3-1 update.
 --  AKa 1-Sep-2008: 2.0-2 (NOT sent to list): fixed VC++ not finding DLL issue
 --  AKa 20-Aug-2008: 2.0-1 sent to luarocks-developers
@@ -14,11 +15,11 @@
 
 package = "lanes"
 
-version = "2.0.3-1"
+version = "2.0.3-2"
 
 -- LuaDist source
 source = {
-  tag = "2.0.3-1",
+  tag = "2.0.3-2",
   url = "git://github.com/LuaDist-testing/lanes.git"
 }
 -- Original source
@@ -34,8 +35,8 @@ description = {
         providing the possibility to run multiple Lua states in parallel. 
     ]],
 	license= "MIT/X11",
-	homepage="http://kotisivu.dnainternet.net/askok/lanes/",
-	maintainer="Asko Kauppi <akauppi@gmail.com>"	
+	homepage="http://kotisivu.dnainternet.net/askok/bin/lanes/",
+	maintainer="Pierre LeMoine <yarr.luben@gmail.com>"	
 }
 
 -- Q: What is the difference of "windows" and "win32"? Seems there is none;
@@ -71,7 +72,12 @@ build = {
     platforms= {
         windows= {
             type= "command",
-            build_command= "make-vc.cmd",
+            build_command=
+               --setup-vc.cmd should be modified to use ProgramFiles & ProgramFiles(x86)
+               --instead of hardcoded paths!
+               "(set LUA51 || set LUA51=$(LUA_BINDIR))&" .. --set LUA51 unless already present
+               "(set VCINSTALLDIR || call setup-vc.cmd) &" .. --dito for VCINSTALLDIR
+               "make-vc.cmd", --now build
             install= {
                 lua = { "src/lanes.lua" },
                 lib = { "lua51-lanes.dll" }
