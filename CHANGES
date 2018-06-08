@@ -1,0 +1,33 @@
+
+CHANGES:
+
+CHANGE X:
+
+CHANGE 5 (new feature):
+    Modifying Makefile so it's better suited to LuaRocks.
+
+
+CHANGE 4 (new feature):
+    Metatable copying, allowing Lua objects to be copied across lanes.
+
+
+CHANGE 3 (bug fix) AKa 5-Aug-2008:
+    The '__gc' method was not tied to thread userdata, at all. Caused memory
+    lifespan problems at least on OS X when threads were cancelled (EINVAL).
+    
+
+CHANGE 2 (bug fix) AKa 5-Aug-2008:
+    Better calculation of timeouts, always making them absolute (even in Win32)
+    to allow for events that wake the lane up but don't read/write the Linda
+    key that it was observing.
+
+
+CHANGE 1 (bug fix) AKa 4-Aug-2008:
+    Signalling woke up only one waiting thread, not all. This caused i.e. 
+    receive to not wake up if there was another thread waiting on the same 
+    Linda object.
+    
+    PThread fix: using 'pthread_cond_broadcast()' instead of 'pthread_cond_signal()'
+    Win32 fix: using manual events and 'PulseEvent()'
+
+(end)

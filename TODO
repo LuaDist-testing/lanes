@@ -1,0 +1,8 @@
+
+TODO:
+
+- Simplify keeper test, now that metatables are copyable.
+
+- PocketPC testing, using Embedded C++ 4.0 and an old IPaq
+
+- Testing Lane killing (not cancellation, but actual killing)
