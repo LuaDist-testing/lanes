@@ -1,3 +1,5 @@
+-- This file was automatically generated for the LuaDist project.
+
 --
 -- Lanes rockspec
 --
@@ -5,14 +7,20 @@
 --      <http://luarocks.org/en/Rockspec_format>
 --
 
-package = "Lanes"
+package = "lanes"
 
-version = "3.10.0-1"
+version = "3.10.1-1"
 
-source= {
-	url= "git://github.com/LuaLanes/lanes.git",
-	branch= "v3.10.0"
+-- LuaDist source
+source = {
+  tag = "3.10.1-1",
+  url = "git://github.com/LuaDist-testing/lanes.git"
 }
+-- Original source
+-- source= {
+-- 	url= "git://github.com/LuaLanes/lanes.git",
+-- 	branch= "v3.10.1"
+-- }
 
 description = {
 	summary= "Multithreading support for Lua",

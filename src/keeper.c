@@ -183,7 +183,7 @@ static void push_table( lua_State* L, int idx_)
 	STACK_END( L, 1);
 }
 
-int keeper_push_linda_storage( struct s_Universe* U, lua_State* L, void* ptr_, unsigned long magic_)
+int keeper_push_linda_storage( struct s_Universe* U, lua_State* L, void* ptr_, ptrdiff_t magic_)
 {
 	struct s_Keeper* const K = keeper_acquire( U->keepers, magic_);
 	lua_State* const KL = K ? K->L : NULL;
@@ -702,9 +702,7 @@ void init_keepers( struct s_Universe* U, lua_State* L)
 		call_on_state_create( U, K, L, eLM_ToKeeper);
 
 		// to see VM name in Decoda debugger
-		lua_pushliteral( K, "Keeper #");                                                  // "Keeper #"
-		lua_pushinteger( K, i + 1);                                                       // "Keeper #" n
-		lua_concat( K, 2);                                                                // "Keeper #n"
+		lua_pushfstring( K, "Keeper #%d", i + 1);                                         // "Keeper #n"
 		lua_setglobal( K, "decoda_name");                                                 //
 
 		// create the fifos table in the keeper state
@@ -717,7 +715,7 @@ void init_keepers( struct s_Universe* U, lua_State* L)
 	STACK_END( L, 0);
 }
 
-struct s_Keeper* keeper_acquire( struct s_Keepers* keepers_, unsigned long magic_)
+struct s_Keeper* keeper_acquire( struct s_Keepers* keepers_, ptrdiff_t magic_)
 {
 	int const nbKeepers = keepers_->nb_keepers;
 	// can be 0 if this happens during main state shutdown (lanes is being GC'ed -> no keepers)
