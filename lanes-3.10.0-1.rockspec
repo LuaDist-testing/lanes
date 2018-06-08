@@ -9,17 +9,17 @@
 
 package = "lanes"
 
-version = "3.9.4-1"
+version = "3.10.0-1"
 
 -- LuaDist source
 source = {
-  tag = "3.9.4-1",
+  tag = "3.10.0-1",
   url = "git://github.com/LuaDist-testing/lanes.git"
 }
 -- Original source
 -- source= {
 -- 	url= "git://github.com/LuaLanes/lanes.git",
--- 	branch= "v3.9.4"
+-- 	branch= "v3.10.0"
 -- }
 
 description = {
@@ -44,7 +44,7 @@ supported_platforms= { "win32",
 }
 
 dependencies= {
-	"lua >= 5.1", -- builds with either 5.1 and 5.2
+	"lua >= 5.1", -- builds with either 5.1, 5.2 and 5.3
 }
 
 build = {
@@ -66,7 +66,7 @@ build = {
 	{
 		["lanes.core"] =
 		{
-			sources = { "src/lanes.c", "src/keeper.c", "src/tools.c", "src/threading.c"},
+			sources = { "src/compat.c", "src/deep.c", "src/lanes.c", "src/keeper.c", "src/tools.c", "src/threading.c"},
 			incdirs = { "src"},
 		},
 		lanes = "src/lanes.lua"

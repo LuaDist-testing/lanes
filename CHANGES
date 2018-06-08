@@ -1,5 +1,37 @@
 CHANGES:
 
+CHANGE 116: BGe, mpeterv 27-Apr-15
+   * bumped version to 3.10.0
+   * segfault fixed in LG_lane_new
+   * Lua 5.3 support
+
+CHANGE 115: BGe 18-Sep-14
+   * bumped version to 3.9.7
+   * new function lanes.sleep()
+
+CHANGE 114: BGe 8-Jul-14
+   * Postponed _G scan for function lookup database to after on_state_create invocation
+   * Fixed a crash when USE_DEBUG_SPEW == 1
+
+CHANGE 113: BGe 17-Jun-14
+   * bumped version to 3.9.6
+   * separate deep userdata code in a dedicated file to allow external modules to implement Lanes-compatible deep userdata without requiring a binary dependency against the Lanes module
+     because of this linda_id function(eDO_metatable) must push 2 values on the stack: a metatable and a deep version string obtained from luaG_pushdeepversion()
+
+CHANGE 112 BGe 16-May-14
+   * bumped version to 3.9.5
+   * fix linda.__towatch to return non-nil when the linda is empty
+   * lanes.gen() error reporting improvements
+
+CHANGE 111 BGe 24-Apr-14
+   * fixed linda:send() possibly returning an undefined value
+
+CHANGE 110 Stepets 20-Apr-14
+   * fix LuaJIT detection issues
+
+CHANGE 109 BGe 03-Apr-14
+   * moved some Lua-version compatibility code in separate source files
+
 CHANGE 108: BGe 20-Mar-14
    * bumped version to 3.9.4
    * set_finalizer throws an error if provided finalizer isn't a function
