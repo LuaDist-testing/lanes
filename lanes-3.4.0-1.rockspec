@@ -1,3 +1,5 @@
+-- This file was automatically generated for the LuaDist project.
+
 --
 -- Lanes rockspec
 --
@@ -5,14 +7,20 @@
 --      <http://luarocks.org/en/Rockspec_format>
 --
 
-package = "Lanes"
+package = "lanes"
 
-version = "3.1.5-1"
+version = "3.4.0-1"
 
-source= {
-	url= "git://github.com/LuaLanes/lanes.git",
-	branch= "v3.1.5"
+-- LuaDist source
+source = {
+  tag = "3.4.0-1",
+  url = "git://github.com/LuaDist-testing/lanes.git"
 }
+-- Original source
+-- source= {
+-- 	url= "git://github.com/LuaLanes/lanes.git",
+-- 	branch= "v3.4.0"
+-- }
 
 description = {
 	summary= "Multithreading support for Lua",
@@ -21,7 +29,7 @@ description = {
 		providing the possibility to run multiple Lua states in parallel.
 	]],
 	license= "MIT/X11",
-	homepage="http://kotisivu.dnainternet.net/askok/lanes/",
+	homepage="https://github.com/LuaLanes/lanes",
 	maintainer="Benoit Germain <bnt.germain@gmail.com>"
 }
 
@@ -36,20 +44,31 @@ supported_platforms= { "win32",
 }
 
 dependencies= {
-	"lua = 5.1",
+	"lua >= 5.1", -- builds with either 5.1 and 5.2
 }
 
 build = {
 	type = "builtin",
-	modules = 
+	platforms =
+	{
+		linux =
+		{
+			modules =
+			{
+				["lanes.core"] =
+				{
+					libraries = "pthread"
+				},
+			}
+		}
+	},
+	modules =
 	{
 		["lanes.core"] =
 		{
 			sources = { "src/lanes.c", "src/keeper.c", "src/tools.c", "src/threading.c"},
 			incdirs = { "src"},
 		},
-		lanes = "src/lanes.lua",
-		["lanes-keeper"] = "src/lanes-keeper.lua"
+		lanes = "src/lanes.lua"
 	}
 }
-
