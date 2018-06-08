@@ -33,6 +33,7 @@ void luaL_requiref (lua_State* L, const char* modname, lua_CFunction openf, int 
 // wrap Lua 5.2 calls under Lua 5.1 API when it is simpler that way
 #if LUA_VERSION_NUM == 502
 #define lua_equal( L, a, b) lua_compare( L, a, b, LUA_OPEQ)
+#define lua_lessthan( L, a, b) lua_compare( L, a, b, LUA_OPLT)
 #define luaG_registerlibfuncs( L, _funcs) luaL_setfuncs( L, _funcs, 0)
 #endif // LUA_VERSION_NUM == 502
 
@@ -105,6 +106,9 @@ extern MUTEX_T mtid_lock;
 void populate_func_lookup_table( lua_State* L, int _i, char const* _name);
 void serialize_require( lua_State *L);
 extern MUTEX_T require_cs;
+
+// for verbose errors
+extern bool_t GVerboseErrors;
 
 #endif
     // TOOLS_H

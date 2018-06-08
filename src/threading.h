@@ -74,16 +74,38 @@ enum e_status { PENDING, RUNNING, WAITING, DONE, ERROR_ST, CANCELLED };
   // CRITICAL_SECTION can be used for simple code protection. Mutexes are
   // needed for use with the SIGNAL system.
   //
-  #define MUTEX_T HANDLE
-  void MUTEX_INIT( MUTEX_T *ref );
+
+	#if WINVER <= 0x0400 // Windows NT4: use a signal
+	typedef struct
+	{
+		CRITICAL_SECTION    signalCS;
+		CRITICAL_SECTION    countCS;
+		HANDLE      waitEvent;
+		HANDLE      waitDoneEvent;
+		LONG        waitersCount;
+	} SIGNAL_T;
+
+
+	#define MUTEX_T HANDLE
+	void MUTEX_INIT( MUTEX_T* ref);
+	void MUTEX_FREE( MUTEX_T* ref);
+	void MUTEX_LOCK( MUTEX_T* ref);
+	void MUTEX_UNLOCK( MUTEX_T* ref);
+
+	#else // Vista and above: use a condition variable
+
+	#define SIGNAL_T CONDITION_VARIABLE
+	#define MUTEX_T CRITICAL_SECTION
+	#define MUTEX_INIT( ref) InitializeCriticalSection( ref)
+	#define MUTEX_FREE( ref) DeleteCriticalSection( ref)
+	#define MUTEX_LOCK( ref) EnterCriticalSection( ref)
+	#define MUTEX_UNLOCK( ref) LeaveCriticalSection( ref)
+
+	#endif // // Vista and above
+
   #define MUTEX_RECURSIVE_INIT(ref)  MUTEX_INIT(ref)  /* always recursive in Win32 */
-  void MUTEX_FREE( MUTEX_T *ref );
-  void MUTEX_LOCK( MUTEX_T *ref );
-  void MUTEX_UNLOCK( MUTEX_T *ref );
 
   typedef unsigned int THREAD_RETURN_T;
-
-  #define SIGNAL_T HANDLE
 
   #define YIELD() Sleep(0)
 	#define THREAD_CALLCONV __stdcall

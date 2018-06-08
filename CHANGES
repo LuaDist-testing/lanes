@@ -1,5 +1,38 @@
 CHANGES:
 
+CHANGE 67: BGe 2-Aug-13
+   * version 3.6.3
+   * lane:cancel(<negative-timeout>) only causes cancel_test() to return true but won't interrupt execution of the lane during linda operations
+
+CHANGE 66: BGe 31-Jul-13
+   * more explicit errors when trying to transfer unknown source functions (with new configure option verbose_errors)
+
+CHANGE 65: BGe 23-Jul-13
+   * default options wrap allocator around a mutex when run by LuaJIT
+
+CHANGE 64: BGe 20-Jul-13
+   * WIN32 builds against pre-Vista versions no longer use PulseEvent to fix occasional hangs when a wake event is missed
+
+CHANGE 63: BGe 20-May-13
+   * version 3.6.2
+   * WIN32 builds use condition variables instead of PulseEvent() when available.
+   * first steps toward fixing make-vc.cmd
+
+CHANGE 62: BGe 05-Apr-13
+   * version 3.6.1
+   * function lookup database population keeps the 'smaller' name in case of multiple hits, to remove the no-LUA_COMPAT_ALL restriction on Lua5.2 builds
+
+CHANGE 61: BGe 14-Mar-13
+   * version 3.6.0
+   * protect_allocator is an API change -> version bump
+   * bugfix: allocator protection should be done once per primary Lua state, not once only the first time ever Lanes is required
+
+CHANGE 60: BGe 13-Mar-13
+   * version 3.5.2
+   * stricter validation of with_timers config option: validator was accepting any non-boolean value
+   * new configuration option protect_allocator for VMs with thread unsafe allocators (such as LuaJIT)
+   * removed some obsolete bits of dead code
+
 CHANGE 59: BGe 12-Feb-13
    * version 3.5.1
    * new lanes.h header and API call luaopen_lanes_embedded() for embedders

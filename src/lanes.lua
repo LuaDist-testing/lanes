@@ -62,7 +62,17 @@ lanes.configure = function( _params)
 	local tostring = assert( tostring)
 	local error = assert( error)
 
-	local default_params = { nb_keepers = 1, on_state_create = nil, shutdown_timeout = 0.25, with_timers = true, track_lanes = nil}
+	local default_params =
+	{
+		nb_keepers = 1,
+		on_state_create = nil,
+		shutdown_timeout = 0.25,
+		with_timers = true,
+		track_lanes = nil,
+		verbose_errors = false,
+		-- LuaJIT provides a thread-unsafe allocator by default, so we need to protect it when used in parallel lanes
+		protect_allocator = (jit and jit.version) and true or false
+	}
 	local param_checkers =
 	{
 		nb_keepers = function( _val)
@@ -71,19 +81,39 @@ lanes.configure = function( _params)
 		end,
 		with_timers = function( _val)
 			-- with_timers may be nil or boolean
-			return _val and type( _val) == "boolean" or true
+			if _val then
+				return type( _val) == "boolean"
+			else
+				return true -- _val is either false or nil
+			end
+		end,
+		protect_allocator = function( _val)
+			-- protect_allocator may be nil or boolean
+			if _val then
+				return type( _val) == "boolean"
+			else
+				return true -- _val is either false or nil
+			end
 		end,
 		on_state_create = function( _val)
 			-- on_state_create may be nil or a function
 			return _val and type( _val) == "function" or true
 		end,
 		shutdown_timeout = function( _val)
-			-- nb_keepers should be a number >= 0
+			-- shutdown_timeout should be a number >= 0
 			return type( _val) == "number" and _val >= 0
 		end,
 		track_lanes = function( _val)
 			-- track_lanes may be nil or boolean
 			return _val and type( _val) == "boolean" or true
+		end,
+		verbose_errors = function( _val)
+			-- verbose_errors may be nil or boolean
+			if _val then
+				return type( _val) == "boolean"
+			else
+				return true -- _val is either false or nil
+			end
 		end
 	}
 
@@ -117,7 +147,7 @@ lanes.configure = function( _params)
 	assert( type( core)=="table")
 
 	-- configure() is available only the first time lanes.core is required process-wide, and we *must* call it to have the other functions in the interface
-	if core.configure then core.configure( _params.nb_keepers, _params.on_state_create, _params.shutdown_timeout, _params.track_lanes) end
+	if core.configure then core.configure( _params.nb_keepers, _params.on_state_create, _params.shutdown_timeout, _params.track_lanes, _params.protect_allocator, _params.verbose_errors) end
 
 	local thread_new = assert( core.thread_new)
 
