@@ -9,17 +9,17 @@
 
 package = "lanes"
 
-version = "3.4.0-1"
+version = "3.4.1-1"
 
 -- LuaDist source
 source = {
-  tag = "3.4.0-1",
+  tag = "3.4.1-1",
   url = "git://github.com/LuaDist-testing/lanes.git"
 }
 -- Original source
 -- source= {
 -- 	url= "git://github.com/LuaLanes/lanes.git",
--- 	branch= "v3.4.0"
+-- 	branch= "v3.4.1"
 -- }
 
 description = {
