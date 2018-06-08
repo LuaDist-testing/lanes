@@ -63,11 +63,24 @@
 static struct s_Keeper *GKeepers = NULL;
 static int GNbKeepers = 0;
 
-/*
-* Lua code for the keeper states (baked in)
-*/
-static char const keeper_chunk[]= 
-#include "keeper.lch"
+static void atexit_close_keepers(void)
+{
+	int i;
+	// 2-pass close, in case a keeper holds a reference to a linda bound to another keeoer
+	for( i = 0; i < GNbKeepers; ++ i)
+	{
+		lua_State* L = GKeepers[i].L;
+		GKeepers[i].L = 0;
+		lua_close( L);
+	}
+	for( i = 0; i < GNbKeepers; ++ i)
+	{
+		MUTEX_FREE( &GKeepers[i].lock_);
+	}
+	if( GKeepers) free( GKeepers);
+	GKeepers = NULL;
+	GNbKeepers = 0;
+}
 
 /*
 * Initialize keeper states
@@ -95,30 +108,38 @@ char const* init_keepers( int const _nbKeepers, lua_CFunction _on_state_create)
 		if (!K)
 			return "out of memory";
 
+		STACK_CHECK( K)
 		// to see VM name in Decoda debugger
 		lua_pushliteral( K, "Keeper #");
 		lua_pushinteger( K, i + 1);
 		lua_concat( K, 2);
 		lua_setglobal( K, "decoda_name");
 
-		// Read in the preloaded chunk (and run it)
-		//
-		if( luaL_loadbuffer( K, keeper_chunk, sizeof(keeper_chunk), "@keeper.lua"))
-			return "luaL_loadbuffer() failed";   // LUA_ERRMEM
-
-		if( lua_pcall( K, 0 /*args*/, 0 /*results*/, 0 /*errfunc*/))
+		// use package.loaders[2] to find keeper microcode
+		lua_getglobal( K, "package");                  // package
+		lua_getfield( K, -1, "loaders");               // package package.loaders
+		lua_rawgeti( K, -1, 2);                        // package package.loaders package.loaders[2]
+		lua_pushliteral( K, "lanes-keeper");           // package package.loaders package.loaders[2] "lanes-keeper"
+		STACK_MID( K, 4);
+		// first pcall loads lanes-keeper.lua, second one runs the chunk
+		if( lua_pcall( K, 1 /*args*/, 1 /*results*/, 0 /*errfunc*/) || lua_pcall( K, 0 /*args*/, 0 /*results*/, 0 /*errfunc*/))
 		{
 			// LUA_ERRRUN / LUA_ERRMEM / LUA_ERRERR
 			//
 			char const* err = lua_tostring( K, -1);
 			assert( err);
 			return err;
-		}
-
+		}                                              // package package.loaders
+		STACK_MID( K, 2);
+		lua_pop( K, 2);
+		STACK_END( K, 0)
 		MUTEX_INIT( &GKeepers[i].lock_);
 		GKeepers[i].L = K;
 		//GKeepers[i].count = 0;
 	}
+	// call close_keepers at the very last as we want to be sure no thread is GCing after.
+	// (and therefore may perform linda object dereferencing after keepers are gone)
+	atexit( atexit_close_keepers);
 	return NULL;    // ok
 }
 
@@ -264,19 +285,4 @@ int keeper_call( lua_State *K, char const *func_name, lua_State *L, void *linda,
 	// whatever happens, restore the stack to where it was at the origin
 	lua_settop( K, Ktos);
 	return retvals;
-}
-
-void close_keepers(void)
-{
-	int i;
-	for( i = 0; i < GNbKeepers; ++ i)
-	{
-		lua_close( GKeepers[i].L);
-		GKeepers[i].L = 0;
-		//assert( GKeepers[i].count == 0);
-		MUTEX_FREE( &GKeepers[i].lock_);
-	}
-	if( GKeepers) free( GKeepers);
-	GKeepers = NULL;
-	GNbKeepers = 0;
 }
