@@ -128,7 +128,6 @@ lanes.configure = function( settings_)
 	end
 	local settings = core.configure and core.configure( params_checker( settings_)) or core.settings
 	local thread_new = assert( core.thread_new)
-	local set_singlethreaded = assert( core.set_singlethreaded)
 	local max_prio = assert( core.max_prio)
 
 lanes.ABOUT =
@@ -197,7 +196,10 @@ end
 --
 --        .globals:  table of globals to set for a new thread (passed by value)
 --
---        .required:  table of packages to require
+--        .required: table of packages to require
+--
+--        .gc_cb:    function called when the lane handle is collected
+--
 --        ... (more options may be introduced later) ...
 --
 -- Calling with a function parameter ('lane_func') ends the string/table
@@ -273,10 +275,11 @@ local function gen( ... )
         end
     end
     
-    local prio, cs, g_tbl, package_tbl, required
+    local prio, cs, g_tbl, package_tbl, required, gc_cb
 
     for k,v in pairs(opt) do
-            if k=="priority" then prio= v
+        if k == "priority" then
+            prio = (type( v) == "number") and v or error( "Bad 'prio' option: expecting number, got " .. type( v), lev)
         elseif k=="cancelstep" then
             cs = (v==true) and 100 or
                 (v==false) and 0 or 
@@ -287,6 +290,8 @@ local function gen( ... )
             package_tbl = (type( v) == "table") and v or error( "Bad package: " .. tostring( v), lev)
         elseif k=="required" then
             required= (type( v) == "table") and v or error( "Bad 'required' option: expecting table, got " .. type( v), lev)
+        elseif k == "gc_cb" then
+            gc_cb = (type( v) == "function") and v or error( "Bad 'gc_cb' option: expecting function, got " .. type( v), lev)
         --..
         elseif k==1 then error( "unkeyed option: ".. tostring(v), lev )
         else error( "Bad option: ".. tostring(k), lev )
@@ -297,7 +302,7 @@ local function gen( ... )
     -- Lane generator
     --
     return function(...)
-        return thread_new( func, libs, cs, prio, g_tbl, package_tbl, required, ...)     -- args
+        return thread_new( func, libs, cs, prio, g_tbl, package_tbl, required, gc_cb, ...)     -- args
     end
 end
 
@@ -597,8 +602,8 @@ end -- settings.with_timers
 --
 -- PUBLIC LANES API
 local genlock = function( linda, key, N)
+	linda:set( key) -- clears existing data
 	linda:limit( key, N)
-	linda:set( key, nil)  -- clears existing data
 
 	--
 	-- [true [, ...]= trues(uint)
@@ -664,6 +669,7 @@ end
 	lanes.linda = core.linda
 	lanes.cancel_error = core.cancel_error
 	lanes.nameof = core.nameof
+	lanes.set_singlethreaded = core.set_singlethreaded
 	lanes.threads = core.threads or function() error "lane tracking is not available" end -- core.threads isn't registered if settings.track_lanes is false
 	lanes.set_thread_priority = core.set_thread_priority
 	lanes.timer = timer
