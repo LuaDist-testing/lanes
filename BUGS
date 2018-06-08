@@ -1,5 +1,6 @@
 
 BUGS:
 
-(none known)
+- tests/irayo_closure.lua fails     (trouble with setting globals right
+    for functions carried over to another Lua state)
 

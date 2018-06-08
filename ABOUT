@@ -14,7 +14,4 @@ in the manual).
 
 Lua Lanes has been optimized for performance, and provides around 50-60%
 speed increase when running heavily threaded applications on dual core
-processors. Running the same code on single core reduces speed around 5%.
-
-Distribution of Lua Lanes is intended to be done via Lua Rocks package
-handling.
+processors (compared to running a non-threaded plain Lua implementation). 

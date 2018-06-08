@@ -716,7 +716,7 @@ bool_t push_cached_table( lua_State *L2, uint_t L2_cache_i, lua_State *L, uint_t
 
 /* 
  * Check if we've already copied the same function from 'L', and reuse the old
- * copy. This allows i.e. recursive use of a function (being its own upvalue).
+ * copy.
  *
  * Always pushes a function to 'L2'.
  */
@@ -724,7 +724,7 @@ static void inter_copy_func( lua_State *L2, uint_t L2_cache_i, lua_State *L, uin
 
 static
 void push_cached_func( lua_State *L2, uint_t L2_cache_i, lua_State *L, uint_t i ) {
-    // TBD: Merge this and same code for tables, once recursive tests pass.
+    // TBD: Merge this and same code for tables
 
     ASSERT_L( hijacked_tostring );
     ASSERT_L( L2_cache_i != 0 );
@@ -785,10 +785,10 @@ void push_cached_func( lua_State *L2, uint_t L2_cache_i, lua_State *L, uint_t i 
     } else if (lua_isboolean(L2,-1)) {
         // Loop in preparing upvalues; either direct or via a table
         // 
-        // TBD: Isn't this a chicken/egg problem; could we push a function
-        //      first, then set its upvalues... Any way OUT?
+        // Note: This excludes the case where a function directly addresses
+        //       itself as an upvalue (recursive lane creation).
         //
-        luaL_error( L, "Recursive use of upvalues; cannot copy the function (TBD)" );
+        luaL_error( L, "Recursive use of upvalues; cannot copy the function" );
     
     } else {
         lua_remove(L2,-2);
@@ -876,12 +876,17 @@ static void inter_copy_func( lua_State *L2, uint_t L2_cache_i, lua_State *L, uin
     * cache so we don't end up in eternal loop.
     */
     for( n=0; lua_getupvalue( L, i, 1+n ) != NULL; n++ ) {
-        if (!inter_copy_one_( L2, L2_cache_i, L, lua_gettop(L), VT_NORMAL ))
-            luaL_error( L, "Cannot copy upvalue type '%s'", luaG_typename(L,-1) );
-
+        if ((!cfunc) && lua_equal(L,i,-1)) {
+            /* Lua closure that has a (recursive) upvalue to itself
+            */
+            lua_pushvalue( L2, -((int)n)-1 );
+        } else {
+            if (!inter_copy_one_( L2, L2_cache_i, L, lua_gettop(L), VT_NORMAL ))
+                luaL_error( L, "Cannot copy upvalue type '%s'", luaG_typename(L,-1) );
+        }
         lua_pop(L,1);
     }
-    // L2: 'n' upvalues (>=0) pushed
+    // L2: function + 'n' upvalues (>=0)
 
   STACK_MID(L,0)
 

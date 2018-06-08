@@ -1,8 +1,8 @@
 @REM
-@REM make-vc.cmd to build Lanes on Visual C++ 2005/08 Express
+@REM make-vc.cmd to build Lanes on Visual C++ 2005/08
 @REM
 @REM Requires:  Windows XP or later (cmd.exe)
-@REM            Visual C++ 2005/2008 Express (tested with 2008)
+@REM            Visual C++ 2005/2008 (Express)
 @REM            LuaBinaries 5.1.3 or Lua for Windows 5.1.3
 @REM
 
@@ -76,6 +76,7 @@ goto ERR_NOLUA
 @if "%1"=="recursive" goto RECURSIVE
 @if "%1"=="fibonacci" goto FIBONACCI
 @if "%1"=="hangtest" goto HANGTEST
+@if "%1"=="require" goto REQUIRE
 
 @echo Unknown target: %1
 @echo.
@@ -133,11 +134,13 @@ goto ERR_NOLUA
 @REM
 @set WARN=/Wall /wd4054 /wd4127 /wd4255 /wd4668 /wd4711 /wd4820 /wd4826
 
-@REM /LDd "creates a debug DLL"
+@REM /LDd: debug DLL
+@REM /O2 /LD: release DLL
 @REM
-@set NODEF=/link /NODEFAULTLIB:libcmt
+@set FLAGS=/O2 /LD
 
-cl %WARN% /O2 /I "%LUA51%\include" /LDd /Felua51-lanes.dll src\*.c "%LUA_LIB%\lua5.1.lib" %NODEF%
+cl %WARN% %FLAGS% /I "%LUA51%\include" /Felua51-lanes.dll src\*.c "%LUA_LIB%\lua5.1.lib"
+@REM cl %WARN% %FLAGS% /I "%LUA51%\include" /Felua51-lanes.dll src\*.c "%LUA_LIB%\lua5.1.lib" /link /NODEFAULTLIB:libcmt
 
 @del lua51-lanes.lib
 @del lua51-lanes.exp
@@ -211,6 +214,10 @@ if exist delme del delme
 
 :HANGTEST
 "%LUA_EXE%" tests\hangtest.lua
+@goto EXIT
+
+:REQUIRE
+"%LUA_EXE%" -e "require'lanes'"
 @goto EXIT
 
 REM ---

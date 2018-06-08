@@ -18,6 +18,7 @@ MODULE = lanes
 N=1000
 
 _SO=.so
+_TARGET_SO=src/lua51-lanes.so
 TIME=time
 
 ifeq "$(findstring MINGW32,$(shell uname -s))" "MINGW32"
@@ -26,6 +27,7 @@ ifeq "$(findstring MINGW32,$(shell uname -s))" "MINGW32"
   LUA=lua
   LUAC=luac
   _SO=.dll
+  _TARGET_SO=./lua51-lanes.dll
   TIME=timeit.exe
 else
   # Autodetect LUA & LUAC
@@ -34,20 +36,31 @@ else
   LUAC=$(word 1,$(shell which luac5.1) $(shell which luac51) luac)
 endif
 
-PREFIX=LUA_CPATH=./src/?$(_SO) LUA_PATH="src/?.lua;./tests/?.lua"
+_PREFIX=LUA_CPATH=./src/?$(_SO) LUA_PATH="src/?.lua;./tests/?.lua"
 
 #---
-all: src/lua51-lanes$(_SO)
+all: $(_TARGET_SO)
 
-src/lua51-lanes$(_SO): src/*.lua src/*.c src/*.h
+$(_TARGET_SO): src/*.lua src/*.c src/*.h
 	cd src && $(MAKE) LUA=$(LUA) LUAC=$(LUAC)
 
 clean:
 	cd src && $(MAKE) clean
 
-debug: src/lua51-lanes$(_SO)
-	gdb $(LUA) tests/basic.lua
+debug:
+	$(MAKE) clean
+	cd src && $(MAKE) LUA=$(LUA) LUAC=$(LUAC) OPT_FLAGS="-O0 -g"
+	@echo ""
+	@echo "** Now, try 'make repetitive' or something and if it crashes, 'gdb $(LUA) ...core file...'"
+	@echo "   Then 'bt' for a backtrace."
+	@echo ""
+	@echo "   You have enabled core, no?   'ulimit -c unlimited'"
+	@echo "   On OS X, core files are under '/cores/'"
+	@echo ""
 
+gdb:
+	@echo "echo *** To start debugging: 'run tests/basic.lua' ***\n\n" > .gdb.cmd
+	$(_PREFIX) gdb -x .gdb.cmd $(LUA)
 
 #--- LuaRocks automated build ---
 #
@@ -58,6 +71,8 @@ rock:
 #--- Testing ---
 #
 test:
+	$(MAKE) irayo_recursive
+#	$(MAKE) irayo_closure
 	$(MAKE) basic
 	$(MAKE) fifo
 	$(MAKE) keeper
@@ -68,78 +83,104 @@ test:
 	$(MAKE) fibonacci
 	$(MAKE) recursive
 
-basic: tests/basic.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+basic: tests/basic.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-fifo: tests/fifo.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+# 
+# This tries to show out a bug which happens in lane cleanup (multicore CPU's only)
+#
+REP_ARGS=-llanes -e "print'say aaa'; for i=1,10 do print(i) end"
+repetitive: $(_TARGET_SO)
+	for i in 1 2 3 4 5 6 7 8 9 10 a b c d e f g h i j k l m n o p q r s t u v w x y z; \
+	   do $(_PREFIX) $(LUA) $(REP_ARGS); \
+    done
 
-keeper: tests/keeper.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+repetitive1: $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $(REP_ARGS)
 
-fibonacci: tests/fibonacci.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+fifo: tests/fifo.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-timer: tests/timer.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+keeper: tests/keeper.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-atomic: tests/atomic.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+fibonacci: tests/fibonacci.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-cyclic: tests/cyclic.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+timer: tests/timer.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-recursive: tests/recursive.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+atomic: tests/atomic.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-hangtest: tests/hangtest.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+cyclic: tests/cyclic.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-ehynes: tests/ehynes.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+recursive: tests/recursive.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-require: tests/require.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+hangtest: tests/hangtest.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
-objects: tests/objects.lua src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) $<
+ehynes: tests/ehynes.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+#require: tests/require.lua $(_TARGET_SO)
+#	$(_PREFIX) $(LUA) $<
+
+objects: tests/objects.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+irayo_recursive: tests/irayo_recursive.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+irayo_closure: tests/irayo_closure.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+finalizer: tests/finalizer.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
+
+error-test: tests/error.lua $(_TARGET_SO)
+	$(_PREFIX) $(LUA) $<
 
 #---
-perftest-plain: tests/perftest.lua src/lua51-lanes$(_SO)
+perftest-plain: tests/perftest.lua $(_TARGET_SO)
 	$(MAKE) _perftest ARGS="$< $(N) -plain"
 
-perftest: tests/perftest.lua src/lua51-lanes$(_SO)
+perftest: tests/perftest.lua $(_TARGET_SO)
 	$(MAKE) _perftest ARGS="$< $(N)"
 
-perftest-odd: tests/perftest.lua src/lua51-lanes$(_SO)
+perftest-odd: tests/perftest.lua $(_TARGET_SO)
 	$(MAKE) _perftest ARGS="$< $(N) -prio=+2"
 
-perftest-even: tests/perftest.lua src/lua51-lanes$(_SO)
+perftest-even: tests/perftest.lua $(_TARGET_SO)
 	$(MAKE) _perftest ARGS="$< $(N) -prio=-2"
 
 #---
-launchtest: tests/launchtest.lua src/lua51-lanes$(_SO)
+launchtest: tests/launchtest.lua $(_TARGET_SO)
 	$(MAKE) _perftest ARGS="$< $(N)"
 
 _perftest:
-	$(PREFIX) $(TIME) $(LUA) $(ARGS)
+	$(_PREFIX) $(TIME) $(LUA) $(ARGS)
 
 
 #--- Installing ---
 #
-# This is for installing to '/usr/local' or similar; through LuaRocks or manually.
+# This is for LuaRocks automatic install, mainly
 #
-# LUA_DIR, LUA_LIBDIR and LUA_SHAREDIR are overwritten by LuaRocks (don't change
-# the names!)
+# LUA_LIBDIR and LUA_SHAREDIR are used by the .rockspec (don't change the names!)
 #
-LUA_DIR=/usr/local
-LUA_LIBDIR=$(LUA_DIR)/lib/lua/5.1
-LUA_SHAREDIR=$(LUA_DIR)/share/lua/5.1
+DESTDIR=/usr/local
+LUA_LIBDIR=$(DESTDIR)/lib/lua/5.1
+LUA_SHAREDIR=$(DESTDIR)/share/lua/5.1
 
-install: src/lua51-lanes$(_SO) src/lanes.lua
+#
+# AKa 17-Oct: changed to use 'install -m 644' and 'cp -p' 
+#
+install: $(_TARGET_SO) src/lanes.lua
 	mkdir -p $(LUA_LIBDIR) $(LUA_SHAREDIR)
-	cp src/lua51-lanes$(_SO) $(LUA_LIBDIR)
-	cp src/lanes.lua $(LUA_SHAREDIR)
+	install -m 644 $(_TARGET_SO) $(LUA_LIBDIR)
+	cp -p src/lanes.lua $(LUA_SHAREDIR)
 
 
 #--- Packaging ---
@@ -158,20 +199,28 @@ else
 	$(MAKE) clean 
 	-rm -rf $(MODULE)-$(VERSION)
 	mkdir $(MODULE)-$(VERSION)
-	tar c --exclude=.svn --exclude=.DS_Store --exclude="_*" \
+	tar c * --exclude=.svn --exclude=.DS_Store --exclude="_*" \
 	        --exclude="*.tgz" --exclude="*.rockspec" \
-	        --exclude=lanes.dev --exclude="$(MODULE)-*" --exclude=xcode * \
-		--exclude="*.obj" --exclude="*.dll" --exclude=timeit.dat \
+	        --exclude=lanes.dev --exclude="$(MODULE)-*" --exclude=xcode \
+		    --exclude="*.obj" --exclude="*.dll" --exclude=timeit.dat \
 	   | (cd $(MODULE)-$(VERSION) && tar x)
 	tar czvf $(MODULE)-$(VERSION).tgz $(MODULE)-$(VERSION)
+	rm -rf $(MODULE)-$(VERSION)
 	md5sum $(MODULE)-$(VERSION).tgz
 endif
 	
 	
 #--- Undocumented ---
 #
-run: src/lua51-lanes$(_SO)
-	$(PREFIX) $(LUA) -e "require '$(MODULE)'" -i
+
+# 2.0.1: Running this (instant exit of the main Lua state) occasionally
+#        segfaults (1:15 or so on OS X PowerPC G4).
+#
+require: $(_TARGET_SO)
+	$(_PREFIX) $(LUA) -e "require '$(MODULE)'"
+
+run: $(_TARGET_SO)
+	$(_PREFIX) $(LUA) -e "require '$(MODULE)'" -i
 
 echo:
 	@echo $(PROGRAMFILES:C=X)

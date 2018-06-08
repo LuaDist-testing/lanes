@@ -21,11 +21,11 @@
     <tr>
       <td align="center">
       <a href="http://www.lua.org">
-        <img src="multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
-        <img src="multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
-        <img src="multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
-        <img src="multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
-        <img src="multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
+        <img src="http://akauppi.googlepages.com/multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
+        <img src="http://akauppi.googlepages.com/multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
+        <img src="http://akauppi.googlepages.com/multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
+        <img src="http://akauppi.googlepages.com/multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
+        <img src="http://akauppi.googlepages.com/multi.png" alt="Lua" align="middle" border="0" height="120" width="128" />
       </a></td>
     </tr>
     <tr>
@@ -42,10 +42,10 @@
 </p><p class="bar">
   <a href="#creation">Creation</a> &middot;
   <a href="#status">Status</a> &middot;
-  <a href="#results">Results and errors</a> &middot;
-  <a href="#cancelling">Cancelling</a>
+  <a href="#results">Results and errors</a>
 </p><p class="bar">
-<!--  <a href="#misc">Misc</a> &middot; -->
+  <a href="#cancelling">Cancelling</a> &middot;
+  <a href="#finalizers">Finalizers</a> &middot;
   <a href="#lindas">Lindas</a> &middot;
   <a href="#timers">Timers</a> &middot;
   <a href="#locks">Locks etc.</a>
@@ -56,7 +56,7 @@
 
 <p><br/><font size="-1"><i>Copyright &copy; 2007-08 Asko Kauppi. All rights reserved.</i>
     <br>Lua Lanes is published under the same <A HREF="http://en.wikipedia.org/wiki/MIT_License">MIT license</A> as Lua 5.1.
-    </p><p>This document was revised on 7-Aug-08, and applies to version 2.0 rc 1.
+    </p><p>This document was revised on 23-Jan-09, and applies to version 2.0.3.
 </font></p>
 
 </center>
@@ -275,7 +275,7 @@ a lane simply by:
 </pre>
 
 Normally, this kind of lanes will be in an eternal loop handling messages.
-Since the lane handle is gone (it is returned and rather immediately collected),
+Since the lane handle is gone,
 there is no way to control such a lane from the outside, nor read its potential
 return values. Then again, such a lane does not even normally return.
 </p>
@@ -326,13 +326,17 @@ If the lane ended in an error, it is propagated to master state at this place.
 </p>
 
 <table border=1 bgcolor="#E0E0FF" cellpadding=10><tr><td>
-    <code>[...]|[nil,err]= lane_h:join( [timeout_secs] )</code>
+    <code>[...]|[nil,err,stack_tbl]= lane_h:join( [timeout_secs] )</code>
 </table>
 <p>
 Waits until the lane finishes, or <tt>timeout</tt> seconds have passed.
-Returns <tt>nil</tt> on timeout, <tt>nil,err</tt> if the lane hit an error,
+Returns <tt>nil</tt> on timeout, <tt>nil,err,stack_tbl</tt> if the lane hit an error,
 or the return values of the lane. Unlike in reading the results in table
 fashion, errors are not propagated.
+</p><p>
+<tt>stack_tbl</tt> is an array of "&lt;filename&gt;:&lt;line&gt;" strings,
+describing where the error was thrown. Use <tt>table.concat()</tt> to format
+it to your liking (or just ignore it).
 </p><p>
 If you use <tt>:join</tt>, make sure your lane main function returns
 a non-nil value so you can tell timeout and error cases apart from succesful
@@ -377,6 +381,31 @@ generally be the last resort.
 <p>Cancellation is tested before going to sleep in <tt>receive()</tt> or <tt>send()</tt> calls
 and after executing <tt>cancelstep</tt> Lua statements. A currently pending <tt>receive</tt>
 or <tt>send</tt> call is currently not awakened, and may be a reason for a non-detected cancel.
+</p>
+
+
+<!-- finalizers +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ -->
+<hr/>
+<h2 id="finalizers">Finalizers</h2>
+
+<table border=1 bgcolor="#E0E0FF" cellpadding=10><tr><td>
+    <code>set_finalizer( finalizer_func )</code>
+    <br/><br/>
+    <code>void= finalizer_func( [error] )</code>
+</table>
+
+<p>The <tt>error</tt> call is used for throwing exceptions in Lua. What Lua
+does not offer, however, is scoped <a href="http://en.wikipedia.org/wiki/Finalizer">finalizers</a> 
+that would get called when a certain block of instructions gets exited, whether
+through peaceful return or abrupt <tt>error</tt>.
+</p>
+<p>Since 2.0.3, Lanes prepares a function <tt>set_finalizer</tt> for doing this. 
+Any functions given to it will be called in the lane Lua state, just prior to 
+closing it. They are not called in any particular order.
+</p>
+<p>An error in a finalizer itself overrides the state of the regular chunk
+(in practise, it would be highly preferable <i>not</i> to have errors in finalizers). 
+If one finalizer errors, the others may not get called.
 </p>
 
 
@@ -891,13 +920,20 @@ its actual value.
 <h2 id="changes">Change log</h2>
 
 <p>
-Changes by version:
+Jan-2009 (2.0.3):
+<ul>
+  <li>Added 'finalizer' to lane options. (TBD: not implemented yet!)
+  </li>
+  <li>Added call stack to errors coming from a lane.
+  </li>
+</ul>
 
-<pre>
-Jul-2008:
-  &middot; Too many changes to list (you'll need to re-read this manual)
-</pre>
-
+Jul-2008 (2.0):
+<ul>
+  <li>Too many changes to list (you'll need to re-read this manual)
+  </li>
+</ul>
+</p>
 
 <!-- footnotes +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ -->
 <hr/>

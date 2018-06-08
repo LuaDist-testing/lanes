@@ -7,22 +7,24 @@
 --      <http://luarocks.org/en/Rockspec_format>
 --
 -- History:
---  AKa 18-Aug-2008: 2.0-1
+--  HHM 19-Oct-2009: 2.0.3-1 update.
+--  AKa 1-Sep-2008: 2.0-2 (NOT sent to list): fixed VC++ not finding DLL issue
+--  AKa 20-Aug-2008: 2.0-1 sent to luarocks-developers
 --
 
 package = "lanes"
 
-version = "2.0-1"
+version = "2.0.3-1"
 
 -- LuaDist source
 source = {
-  tag = "2.0-1",
+  tag = "2.0.3-1",
   url = "git://github.com/LuaDist-testing/lanes.git"
 }
 -- Original source
 -- source= {
---     url= "http://akauppi.googlepages.com/lanes-2.0.tgz",
---     md5= "27a807828de0bda3787dbcd2d4947019"
+--     url= "http://luaforge.net/frs/download.php/3927/lanes-2.0.3.tgz",
+--     md5= "d07ab814a15bb33898c2f607accefca6"
 -- }
 
 description = {
@@ -36,13 +38,13 @@ description = {
 	maintainer="Asko Kauppi <akauppi@gmail.com>"	
 }
 
--- Q: What is the difference of "windows" and "win32"?
+-- Q: What is the difference of "windows" and "win32"? Seems there is none;
+--    so should we list either one or both?
 --
-supported_platforms= { "win32",     -- Q: what's the difference to "windows"?
+supported_platforms= { "windows",
                        "macosx", 
                        "linux", 
-                       "freebsd",   -- TBD: not tested recently
-                       --"msys",    -- TBD: not supported by LuaRocks 0.6
+                       "freebsd"
 }
 
 dependencies= {
@@ -72,7 +74,7 @@ build = {
             build_command= "make-vc.cmd",
             install= {
                 lua = { "src/lanes.lua" },
-                lib = { "src/lua51-lanes.dll" }
+                lib = { "lua51-lanes.dll" }
             }
         }
     },

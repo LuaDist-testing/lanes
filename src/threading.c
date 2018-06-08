@@ -46,11 +46,14 @@ THE SOFTWARE.
 #endif
 
 
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_CYGWIN)
+# include <sys/types.h>
+# include <unistd.h>
+#endif
+
 /* Linux needs to check, whether it's been run as root
 */
 #ifdef PLATFORM_LINUX
-# include <sys/types.h>
-# include <unistd.h>
   volatile bool_t sudo;
 #endif
 
@@ -102,8 +105,6 @@ time_d now_secs(void) {
         st.wMonth= 1;   // Jan
         st.wDay= 1;
         st.wHour= st.wMinute= st.wSecond= st.wMilliseconds= 0;
-        //
-        st.wDayOfWeek= 0;  // ignored
 
         if (!SystemTimeToFileTime( &st, &ft ))
             FAIL( "SystemTimeToFileTime", GetLastError() );
@@ -123,7 +124,24 @@ time_d now_secs(void) {
      * it would do so gracefully. In practise, the integer accuracy is not
      * of the 100ns class but just 1ms (Windows XP).
      */
+# if 1
+    // >= 2.0.3 code
+    return (double) ((uli.QuadPart - uli_epoch.QuadPart)/10000) / 1000.0;
+# elif 0
+    // fix from Kriss Daniels, see: 
+    // <http://luaforge.net/forum/forum.php?thread_id=22704&forum_id=1781>
+    //
+    // "seem to be getting negative numbers from the old version, probably number
+    // conversion clipping, this fixes it and maintains ms resolution"
+    //
+    // This was a bad fix, and caused timer test 5 sec timers to disappear.
+    // --AKa 25-Jan-2009
+    //
+    return ((double)((signed)((uli.QuadPart/10000) - (uli_epoch.QuadPart/10000)))) / 1000.0;
+# else
+    // <= 2.0.2 code
     return (double)(uli.QuadPart - uli_epoch.QuadPart) / 10000000.0;
+# endif
 #else
     struct timeval tv;
         // {
@@ -188,7 +206,7 @@ static void prepare_timeout( struct timespec *ts, time_d abs_secs ) {
 //                      valid values N * 4KB
 //
 #ifndef _THREAD_STACK_SIZE
-# if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC)
+# if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC) || (defined PLATFORM_CYGWIN)
 #  define _THREAD_STACK_SIZE 0
       // Win32: does it work with less?
 # elif (defined PLATFORM_OSX)
@@ -542,6 +560,11 @@ static void prepare_timeout( struct timespec *ts, time_d abs_secs ) {
         #define _PRIO_HI 31
         #define _PRIO_0  15
         #define _PRIO_LO 1
+
+#elif defined(PLATFORM_CYGWIN)
+	//
+	// TBD: Find right values for Cygwin
+	//
 #else
         #error "Unknown OS: not implemented!"
 #endif
@@ -607,18 +630,7 @@ static void prepare_timeout( struct timespec *ts, time_d abs_secs ) {
 
             // Try again, later.
 
-            // Yield is non-portable:
-            //
-            //    OS X 10.4.8/9 has pthread_yield_np()
-            //    Linux 2.4   has pthread_yield() if _GNU_SOURCE is #defined
-            //    FreeBSD 6.2 has pthread_yield()
-            //    ...
-            //
-#  ifdef PLATFORM_OSX
-            pthread_yield_np();
-#  else
-            pthread_yield();
-#  endif
+            Yield();
         } else {
             _PT_FAIL( rc, "pthread_create()", __FILE__, __LINE__ );
         }

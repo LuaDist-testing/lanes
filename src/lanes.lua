@@ -49,7 +49,7 @@ local linda_id=    assert( mm.linda_id )
 
 local thread_new=   assert(mm.thread_new)
 local thread_status= assert(mm.thread_status)
-local thread_wait=  assert(mm.thread_wait)
+local thread_join=  assert(mm.thread_join)
 local thread_cancel= assert(mm.thread_cancel)
 
 local _single= assert(mm._single)
@@ -71,8 +71,18 @@ if not string then
     error( "To use 'lanes', you will also need to have 'string' available.", 2 )
 end
 
+-- 
+-- Cache globals for code that might run under sandboxing 
+--
+local assert= assert
 local string_gmatch= assert( string.gmatch )
-
+local select= assert( select )
+local type= assert( type )
+local pairs= assert( pairs )
+local tostring= assert( tostring )
+local error= assert( error )
+local setmetatable= assert( setmetatable )
+local rawget= assert( rawget )
 
 ABOUT= 
 {
@@ -124,11 +134,11 @@ local lane_mt= {
                         --
                         me[0]= true  -- marker, even on errors
 
-                        local t= { thread_wait(me._ud) }   -- wait indefinate
+                        local t= { thread_join(me._ud) }   -- wait indefinate
                             --
                             -- { ... }      "done": regular return, 0..N results
                             -- { }          "cancelled"
-                            -- { nil, err_str } "error"
+                            -- { nil, err_str, stack_tbl } "error"
                         
                         local st= thread_status(me._ud)
                         if st=="done" then
@@ -139,8 +149,11 @@ local lane_mt= {
                                 me[i]= v
                             end
                         elseif st=="error" then
-                            assert( t[1]==nil and t[2] )
+                            assert( t[1]==nil and t[2] and type(t[3])=="table" )
                             me[-1]= t[2]
+                            -- me[-2] could carry the stack table, but even 
+                            -- me[-1] is rather unnecessary (and undocumented);
+                            -- use ':join()' instead.   --AKa 22-Jan-2009
                         elseif st=="cancelled" then
                             -- do nothing
                         else
@@ -153,7 +166,19 @@ local lane_mt= {
                     --
                     local err= rawget(me, -1)
                     if err~=nil and k~=-1 then
-                        error( err, 3 )    -- level to customer's code
+                        -- Note: Lua 5.1 interpreter is not prepared to show
+                        --       non-string errors, so we use 'tostring()' here
+                        --       to get meaningful output.  --AKa 22-Jan-2009
+                        --
+                        --       Also, the stack dump we get is no good; it only
+                        --       lists our internal Lanes functions. There seems
+                        --       to be no way to switch it off, though.
+                        
+                        -- Level 3 should show the line where 'h[x]' was read
+                        -- but this only seems to work for string messages
+                        -- (Lua 5.1.4). No idea, why.   --AKa 22-Jan-2009
+                        --
+                        error( tostring(err), 3 )   -- level 3 should show the line where 'h[x]' was read
                     end
                     return rawget( me, k )
                     --
@@ -281,10 +306,10 @@ lane_proxy= function( ud )
         --
         cancel= function(me) thread_cancel(me._ud) end,
         
-        -- [...] | [nil,err]= me:join( [wait_secs=-1] )
+        -- [...] | [nil,err,stack_tbl]= me:join( [wait_secs=-1] )
         --
-        join= function( me, wait, propagate ) 
-                return thread_wait( me._ud, wait )
+        join= function( me, wait ) 
+                return thread_join( me._ud, wait )
             end,
         }
     assert( proxy._ud )
@@ -356,7 +381,7 @@ if first_time then
     -- set_timer( linda_h, key [,wakeup_at_secs [,period_secs]] )
     --
     local function set_timer( linda, key, wakeup_at, period )
-    
+
         assert( wakeup_at==nil or wakeup_at>0.0 )
         assert( period==nil or period>0.0 )
 

@@ -15,6 +15,9 @@ OBJ=$(SRC:.c=.o)
 #
 LIBFLAG=-shared
 
+OPT_FLAGS=-O2
+    # -O0 -g
+
 LUA=lua
 LUAC=luac
 
@@ -91,9 +94,7 @@ ifeq "$(LUAROCKS)" ""
     LIBFLAG = -bundle -undefined dynamic_lookup
   endif
   
-  CFLAGS=-Wall -Werror -O2 $(LUA_FLAGS)
-  #CFLAGS=-Wall -Werror -O0 -g $(LUA_FLAGS)
-
+  CFLAGS=-Wall -Werror $(OPT_FLAGS) $(LUA_FLAGS)
   LIBS=$(LUA_LIBS)
 endif
 

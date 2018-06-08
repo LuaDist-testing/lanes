@@ -18,6 +18,8 @@
   #define PLATFORM_BSD
 #elif (defined __QNX__)
   #define PLATFORM_QNX
+#elif (defined __CYGWIN__)
+  #define PLATFORM_CYGWIN
 #else
   #error "Unknown platform!"
 #endif
@@ -69,6 +71,8 @@ enum e_status { PENDING, RUNNING, WAITING, DONE, ERROR_ST, CANCELLED };
   typedef unsigned THREAD_RETURN_T;
 
   #define SIGNAL_T HANDLE
+  
+  #define YIELD() Sleep(0)
 #else
   // PThread (Linux, OS X, ...)
   //
@@ -97,6 +101,19 @@ enum e_status { PENDING, RUNNING, WAITING, DONE, ERROR_ST, CANCELLED };
   typedef pthread_cond_t SIGNAL_T;
 
   void SIGNAL_ONE( SIGNAL_T *ref );
+  
+  // Yield is non-portable:
+  //
+  //    OS X 10.4.8/9 has pthread_yield_np()
+  //    Linux 2.4   has pthread_yield() if _GNU_SOURCE is #defined
+  //    FreeBSD 6.2 has pthread_yield()
+  //    ...
+  //
+  #ifdef PLATFORM_OSX
+    #define YIELD() pthread_yield_np()
+  #else
+    #define YIELD() pthread_yield()
+  #endif
 #endif
 
 void SIGNAL_INIT( SIGNAL_T *ref );
@@ -149,7 +166,7 @@ bool_t SIGNAL_WAIT( SIGNAL_T *ref, MUTEX_T *mu, time_d timeout );
                       THREAD_RETURN_T (*func)( void * ),
                       void *data, int prio /* -2..+2 */ );
                       
-# ifdef PLATFORM_LINUX
+# if defined(PLATFORM_LINUX)
   volatile bool_t sudo;
 #  ifdef LINUX_SCHED_RR
 #   define THREAD_PRIO_MIN (sudo ? -2 : 0)

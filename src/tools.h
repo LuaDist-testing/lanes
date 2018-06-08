@@ -68,11 +68,5 @@ void luaG_inter_move( lua_State *L, lua_State *L2, uint_t n );
 extern MUTEX_T deep_lock;
 extern MUTEX_T mtid_lock;
 
-#if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC)
-# define LUAG_EXPORT __declspec(dllexport)
-#else
-# define LUAG_EXPORT /*nothing*/
-#endif
-
 #endif
     // TOOLS_H

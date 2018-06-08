@@ -4,6 +4,10 @@
  * Multithreading in Lua.
  * 
  * History:
+ *      20-Oct-08 (2.0.2): Added closing of free-running threads, but it does
+ *                  not seem to eliminate the occasional segfaults at process
+ *                  exit.
+ *          ...
  *      24-Jun-08 .. 14-Aug-08 AKa: Major revise, Lanes 2008 version (2.0 rc1)
  *          ...
  *      18-Sep-06 AKa: Started the module.
@@ -53,7 +57,7 @@
  *      ...
  */
 
-const char *VERSION= "2.0";
+const char *VERSION= "2.0.3";
 
 /*
 ===============================================================================
@@ -107,10 +111,20 @@ THE SOFTWARE.
 */
 #define KEEPER_STATES_N 1   // 6
 
+/* Do you want full call stacks, or just the line where the error happened?
+*
+* TBD: The full stack feature does not seem to work (try 'make error').
+*/
+#define ERROR_FULL_STACK
+
+#ifdef ERROR_FULL_STACK
+# define STACK_TRACE_KEY ((void*)lane_error)     // used as registry key
+#endif
+
 /*
 * Lua code for the keeper states (baked in)
 */
-char keeper_chunk[]= 
+static char keeper_chunk[]= 
 #include "keeper.lch"
 
 struct s_lane;
@@ -119,6 +133,16 @@ static void cancel_error( lua_State *L );
 
 #define CANCEL_TEST_KEY ((void*)cancel_test)    // used as registry key
 #define CANCEL_ERROR ((void*)cancel_error)      // 'cancel_error' sentinel
+
+/*
+* registry[FINALIZER_REG_KEY] is either nil (no finalizers) or a table
+* of functions that Lanes will call after the executing 'pcall' has ended.
+*
+* We're NOT using the GC system for finalizer mainly because providing the
+* error (and maybe stack trace) parameters to the finalizer functions would
+* anyways complicate that approach.
+*/
+#define FINALIZER_REG_KEY ((void*)LG_set_finalizer)
 
 struct s_Linda;
 
@@ -135,6 +159,39 @@ struct s_Linda;
       fprintf( stderr, "%s\n", buf ); \
     }
 #endif
+
+static bool_t thread_cancel( struct s_lane *s, double secs, bool_t force );
+
+
+/*
+* Push a table stored in registry onto Lua stack.
+*
+* If there is no existing table, create one if 'create' is TRUE.
+* 
+* Returns: TRUE if a table was pushed
+*          FALSE if no table found, not created, and nothing pushed
+*/
+static bool_t push_registry_table( lua_State *L, void *key, bool_t create ) {
+
+    STACK_GROW(L,3);
+    
+    lua_pushlightuserdata( L, key );
+    lua_gettable( L, LUA_REGISTRYINDEX );
+    
+    if (lua_isnil(L,-1)) {
+        lua_pop(L,1);
+
+        if (!create) return FALSE;  // nothing pushed
+
+        lua_newtable(L);
+        lua_pushlightuserdata( L, key );
+        lua_pushvalue(L,-2);    // duplicate of the table
+        lua_settable( L, LUA_REGISTRYINDEX );
+        
+        // [-1]: table that's also bound in registry
+    }
+    return TRUE;    // table pushed
+}
 
 
 /*---=== Serialize require ===---
@@ -653,6 +710,98 @@ LUAG_FUNC( linda_id ) {
 }
 
 
+/*---=== Finalizer ===---
+*/
+
+//---
+// void= finalizer( finalizer_func )
+//
+// finalizer_func( [err, stack_tbl] )
+//
+// Add a function that will be called when exiting the lane, either via
+// normal return or an error.
+//
+LUAG_FUNC( set_finalizer )
+{
+    STACK_GROW(L,3);
+    
+    // Get the current finalizer table (if any)
+    //
+    push_registry_table( L, FINALIZER_REG_KEY, TRUE /*do create if none*/ );
+
+    lua_pushinteger( L, lua_objlen(L,-1)+1 );
+    lua_pushvalue( L, 1 );  // copy of the function
+    lua_settable( L, -3 );
+    
+    lua_pop(L,1);
+    return 0;
+}
+
+
+//---
+// Run finalizers - if any - with the given parameters
+//
+// If 'rc' is nonzero, error message and stack index are available as:
+//      [-1]: stack trace (table)
+//      [-2]: error message (any type)
+//
+// Returns:
+//      0 if finalizers were run without error (or there were none)
+//      LUA_ERRxxx return code if any of the finalizers failed
+//
+// TBD: should we add stack trace on failing finalizer, wouldn't be hard..
+//
+static int run_finalizers( lua_State *L, int lua_rc )
+{
+    unsigned error_index, tbl_index;
+    unsigned n;
+    int rc= 0;
+    
+    if (!push_registry_table(L, FINALIZER_REG_KEY, FALSE /*don't create one*/))
+        return 0;   // no finalizers
+
+    tbl_index= lua_gettop(L);
+    error_index= (lua_rc!=0) ? tbl_index-1 : 0;   // absolute indices
+
+    STACK_GROW(L,4);
+
+    // [-1]: { func [, ...] }
+    //
+    for( n= lua_objlen(L,-1); n>0; n-- ) {
+        unsigned args= 0;
+        lua_pushinteger( L,n );
+        lua_gettable( L, -2 );
+        
+        // [-1]: function
+        // [-2]: finalizers table
+
+        if (error_index) {
+            lua_pushvalue( L, error_index );
+            lua_pushvalue( L, error_index+1 );  // stack trace
+            args= 2;
+        }
+
+        rc= lua_pcall( L, args, 0 /*retvals*/, 0 /*no errfunc*/ );
+            //
+            // LUA_ERRRUN / LUA_ERRMEM
+    
+        if (rc!=0) {
+            // [-1]: error message
+            //
+            // If one finalizer fails, don't run the others. Return this
+            // as the 'real' error, preceding that we could have had (or not)
+            // from the actual code.
+            //
+            break;
+        }
+    }
+    
+    lua_remove(L,tbl_index);   // take finalizer table out of stack
+
+    return rc;
+}
+
+
 /*---=== Threads ===---
 */
 
@@ -694,13 +843,173 @@ struct s_lane {
 
     volatile enum { 
         NORMAL,         // normal master side state
-        SELFDESTRUCT,   // free-running thread, handle has been gc'ed. Shall clean after itself
         KILLED          // issued an OS kill
     } mstatus;
         //
-        // M: possibly sets to SELFDESTRUCT or KILLED
-        // S: read at exit; if SELFDESTRUCT clears up the data structure
+        // M: sets to NORMAL, if issued a kill changes to KILLED
+        // S: not used
+        
+    struct s_lane * volatile selfdestruct_next;
+        //
+        // M: sets to non-NULL if facing lane handle '__gc' cycle but the lane
+        //    is still running
+        // S: cleans up after itself if non-NULL at lane exit
 };
+
+static MUTEX_T selfdestruct_cs;
+    //
+    // Protects modifying the selfdestruct chain
+
+#define SELFDESTRUCT_END ((struct s_lane *)(-1))
+    //
+    // The chain is ended by '(struct s_lane*)(-1)', not NULL:
+    //      'selfdestruct_first -> ... -> ... -> (-1)'
+
+struct s_lane * volatile selfdestruct_first= SELFDESTRUCT_END;
+
+/*
+* Add the lane to selfdestruct chain; the ones still running at the end of the
+* whole process will be cancelled.
+*/
+static void selfdestruct_add( struct s_lane *s ) {
+
+    MUTEX_LOCK( &selfdestruct_cs );
+    {
+        assert( s->selfdestruct_next == NULL );
+
+        s->selfdestruct_next= selfdestruct_first;
+        selfdestruct_first= s;
+    }
+    MUTEX_UNLOCK( &selfdestruct_cs );
+}
+
+/*
+* A free-running lane has ended; remove it from selfdestruct chain
+*/
+static void selfdestruct_remove( struct s_lane *s ) {
+
+    MUTEX_LOCK( &selfdestruct_cs );
+    {
+        // Make sure (within the MUTEX) that we actually are in the chain
+        // still (at process exit they will remove us from chain and then
+        // cancel/kill).
+        //
+        if (s->selfdestruct_next != NULL) {
+            struct s_lane **ref= (struct s_lane **) &selfdestruct_first;
+            bool_t found= FALSE;
+    
+            while( *ref != SELFDESTRUCT_END ) {
+                if (*ref == s) {
+                    *ref= s->selfdestruct_next;
+                    s->selfdestruct_next= NULL;
+                    found= TRUE;
+                    break;
+                }
+                ref= (struct s_lane **) &((*ref)->selfdestruct_next);
+            }
+            assert( found );
+        }
+    }
+    MUTEX_UNLOCK( &selfdestruct_cs );
+}
+
+/*
+* Process end; cancel any still free-running threads
+*/
+static void selfdestruct_atexit( void ) {
+
+    if (selfdestruct_first == SELFDESTRUCT_END) return;    // no free-running threads
+
+    // Signal _all_ still running threads to exit
+    //
+    MUTEX_LOCK( &selfdestruct_cs );
+    {
+        struct s_lane *s= selfdestruct_first;
+        while( s != SELFDESTRUCT_END ) {
+            s->cancel_request= TRUE;
+            s= s->selfdestruct_next;
+        }
+    }
+    MUTEX_UNLOCK( &selfdestruct_cs );
+
+    // When noticing their cancel, the lanes will remove themselves from
+    // the selfdestruct chain.
+
+    // TBD: Not sure if Windows (multi core) will require the timed approach,
+    //      or single Yield. I don't have machine to test that (so leaving
+    //      for timed approach).    -- AKa 25-Oct-2008
+ 
+#ifdef PLATFORM_LINUX
+    // It seems enough for Linux to have a single yield here, which allows
+    // other threads (timer lane) to proceed. Without the yield, there is
+    // segfault.
+    //
+    YIELD();
+#else
+    // OS X 10.5 (Intel) needs more to avoid segfaults.
+    //
+    // "make test" is okay. 100's of "make require" are okay.
+    //
+    // Tested on MacBook Core Duo 2GHz and 10.5.5:
+    //  -- AKa 25-Oct-2008
+    //
+    #ifndef ATEXIT_WAIT_SECS
+    # define ATEXIT_WAIT_SECS (0.1)
+    #endif
+    {
+        double t_until= now_secs() + ATEXIT_WAIT_SECS;
+    
+        while( selfdestruct_first != SELFDESTRUCT_END ) {
+            YIELD();    // give threads time to act on their cancel
+            
+            if (now_secs() >= t_until) break;
+        }
+    }
+#endif
+
+    //---
+    // Kill the still free running threads
+    //
+    if ( selfdestruct_first != SELFDESTRUCT_END ) {
+        unsigned n=0;
+        MUTEX_LOCK( &selfdestruct_cs );
+        {
+            struct s_lane *s= selfdestruct_first;
+            while( s != SELFDESTRUCT_END ) {
+                n++;
+                s= s->selfdestruct_next;
+            }
+        }
+        MUTEX_UNLOCK( &selfdestruct_cs );
+
+    // Linux (at least 64-bit): CAUSES A SEGFAULT IF THIS BLOCK IS ENABLED
+    //       and works without the block (so let's leave those lanes running)
+    //
+#if 1
+        // 2.0.2: at least timer lane is still here
+        //
+        //fprintf( stderr, "Left %d lane(s) with cancel request at process end.\n", n );
+#else
+        MUTEX_LOCK( &selfdestruct_cs );
+        {
+            struct s_lane *s= selfdestruct_first;
+            while( s != SELFDESTRUCT_END ) {
+                struct s_lane *next_s= s->selfdestruct_next;
+                s->selfdestruct_next= NULL;     // detach from selfdestruct chain
+
+                THREAD_KILL( &s->thread );
+                s= next_s;
+                n++;
+            }
+            selfdestruct_first= SELFDESTRUCT_END;
+        }
+        MUTEX_UNLOCK( &selfdestruct_cs );
+
+        fprintf( stderr, "Killed %d lane(s) at process end.\n", n );
+#endif
+    }
+}
+
 
 // To allow free-running threads (longer lifespan than the handle's)
 // 'struct s_lane' are malloc/free'd and the handle only carries a pointer.
@@ -781,26 +1090,68 @@ LUAG_FUNC( _single ) {
 *
 * ".. will be called with the error message and its return value will be the 
 *     message returned on the stack by lua_pcall."
+*
+* Note: Rather than modifying the error message itself, it would be better
+*     to provide the call stack (as string) completely separated. This would
+*     work great with non-string error values as well (current system does not).
+*     (This is NOT possible with the Lua 5.1 'lua_pcall()'; we could of course
+*     implement a Lanes-specific 'pcall' of our own that does this). TBD!!! :)
+*       --AKa 22-Jan-2009
 */
+#ifdef ERROR_FULL_STACK
+
 static int lane_error( lua_State *L ) {
     lua_Debug ar;
+    unsigned lev,n;
+
+    // [1]: error message (any type)
 
     assert( lua_gettop(L)==1 );
 
-    // [1]: plain error message
+    // Don't do stack survey for cancelled lanes.
+    //
+#if 1
+    if (lua_touserdata(L,1) == CANCEL_ERROR)
+        return 1;   // just pass on
+#endif
 
-    if (lua_type(L,1) == LUA_TSTRING) {
-        if (lua_getstack(L, 1 /*level*/, &ar)) {
-            lua_getinfo(L, "Sl", &ar);
-            if (ar.currentline > 0) {
-                STACK_GROW(L,1);
-                lua_pushfstring( L, "%s:%d: ", ar.short_src, ar.currentline );
-                lua_concat( L, 2 );
-            }
+    // Place stack trace at 'registry[lane_error]' for the 'luc_pcall()'
+    // caller to fetch. This bypasses the Lua 5.1 limitation of only one
+    // return value from error handler to 'lua_pcall()' caller.
+
+    // It's adequate to push stack trace as a table. This gives the receiver
+    // of the stack best means to format it to their liking. Also, it allows
+    // us to add more stack info later, if needed.
+    //
+    // table of { "sourcefile.lua:<line>", ... }
+    //
+    STACK_GROW(L,3);
+    lua_newtable(L);
+
+    // Best to start from level 1, but in some cases it might be a C function
+    // and we don't get '.currentline' for that. It's okay - just keep level
+    // and table index growing separate.    --AKa 22-Jan-2009
+    //
+    lev= 0;
+    n=1;
+    while( lua_getstack(L, ++lev, &ar ) ) {
+        lua_getinfo(L, "Sl", &ar);
+        if (ar.currentline > 0) {
+            lua_pushinteger( L, n++ );
+            lua_pushfstring( L, "%s:%d", ar.short_src, ar.currentline );
+            lua_settable( L, -3 );
         }
     }
-    return 1;
+
+    lua_pushlightuserdata( L, STACK_TRACE_KEY );
+    lua_insert(L,-2);
+    lua_settable( L, LUA_REGISTRYINDEX );
+
+    assert( lua_gettop(L)== 1 );
+
+    return 1;   // the untouched error value
 }
+#endif
 
 
 //---
@@ -811,44 +1162,102 @@ static int lane_error( lua_State *L ) {
 #endif
 {
     struct s_lane *s= (struct s_lane *)vs;
-    int rc;
+    int rc, rc2;
+    lua_State *L= s->L;
 
     s->status= RUNNING;  // PENDING -> RUNNING
 
-    STACK_GROW( s->L, 1 );
-    lua_pushcfunction( s->L, lane_error );
-    lua_insert( s->L, 1 );
+    // Tie "set_finalizer()" to the state
+    //
+    lua_pushcfunction( L, LG_set_finalizer );
+    lua_setglobal( L, "set_finalizer" );
+
+#ifdef ERROR_FULL_STACK
+    STACK_GROW( L, 1 );
+    lua_pushcfunction( L, lane_error );
+    lua_insert( L, 1 );
 
     // [1]: error handler
     // [2]: function to run
     // [3..top]: parameters
     //
-    rc= lua_pcall( s->L, lua_gettop(s->L)-2, LUA_MULTRET, 0 /*error handler (no if 0, yes if 1)*/ );
-        //
+    rc= lua_pcall( L, lua_gettop(L)-2, LUA_MULTRET, 1 /*error handler*/ );
         // 0: no error
         // LUA_ERRRUN: a runtime error (error pushed on stack)
         // LUA_ERRMEM: memory allocation error
         // LUA_ERRERR: error while running the error handler (if any)
 
-    lua_remove(s->L,1);    // remove error handler
+    assert( rc!=LUA_ERRERR );   // since we've authored it
 
-    if (s->mstatus == SELFDESTRUCT) {
+    lua_remove(L,1);    // remove error handler
+
+    // Lua 5.1 error handler is limited to one return value; taking stack trace
+    // via registry
+    //
+    if (rc!=0) {    
+        STACK_GROW(L,1);
+        lua_pushlightuserdata( L, STACK_TRACE_KEY );
+        lua_gettable(L, LUA_REGISTRYINDEX);
+
+        // For cancellation, a stack trace isn't placed
+        //
+        assert( lua_istable(L,2) || (lua_touserdata(L,1)==CANCEL_ERROR) );
+        
+        // Just leaving the stack trace table on the stack is enough to get
+        // it through to the master.
+    }
+
+#else
+    // This code does not use 'lane_error'
+    //
+    // [1]: function to run
+    // [2..top]: parameters
+    //
+    rc= lua_pcall( L, lua_gettop(L)-1, LUA_MULTRET, 0 /*no error handler*/ );
+        // 0: no error
+        // LUA_ERRRUN: a runtime error (error pushed on stack)
+        // LUA_ERRMEM: memory allocation error
+#endif
+
+//STACK_DUMP(L);
+    // Call finalizers, if the script has set them up.
+    //
+    rc2= run_finalizers(L,rc);
+    if (rc2!=0) {
+        // Error within a finalizer!  
+        // 
+        // [-1]: error message
+
+        rc= rc2;    // we're overruling the earlier script error or normal return
+
+        lua_insert( L,1 );  // make error message [1]
+        lua_settop( L,1 );  // remove all rest
+
+        // Place an empty stack table just to keep the API simple (always when
+        // there's an error, there's also stack table - though it may be empty).
+        //
+        lua_newtable(L);
+    }
+
+    if (s->selfdestruct_next != NULL) {
         // We're a free-running thread and no-one's there to clean us up.
         //
         lua_close( s->L );
+        L= 0;
 
     #if !( (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC) || (defined PTHREAD_TIMEDJOIN) )
         SIGNAL_FREE( &s->done_signal_ );
         MUTEX_FREE( &s->done_lock_ );
     #endif
+        selfdestruct_remove(s);     // away from selfdestruct chain
         free(s);
 
     } else {
-        // leave results (1..top) or error message (top) on the stack - master will copy them
+        // leave results (1..top) or error message + stack trace (1..2) on the stack - master will copy them
 
         enum e_status st= 
             (rc==0) ? DONE 
-                    : (lua_touserdata(s->L,-1)==CANCEL_ERROR) ? CANCELLED 
+                    : (lua_touserdata(L,1)==CANCEL_ERROR) ? CANCELLED 
                     : ERROR_ST;
 
         // Posix no PTHREAD_TIMEDJOIN:
@@ -973,6 +1382,7 @@ ASSERT_L( lua_isfunction(L2,1) );
     SIGNAL_INIT( &s->done_signal_ );
 #endif
     s->mstatus= NORMAL;
+    s->selfdestruct_next= NULL;
 
     // Set metatable for the userdata
     //
@@ -1004,10 +1414,19 @@ STACK_END(L,1)
 // Cleanup for a thread userdata. If the thread is still executing, leave it
 // alive as a free-running thread (will clean up itself).
 //
-// Why not cancel/kill a loose thread: 
+// * Why NOT cancel/kill a loose thread: 
+//
 // At least timer system uses a free-running thread, they should be handy
 // and the issue of cancelling/killing threads at gc is not very nice, either
 // (would easily cause waits at gc cycle, which we don't want).
+//
+// * Why YES kill a loose thread:
+//
+// Current way causes segfaults at program exit, if free-running threads are
+// in certain stages. Details are not clear, but this is the core reason.
+// If gc would kill threads then at process exit only one thread would remain.
+//
+// Todo: Maybe we should have a clear #define for selecting either behaviour.
 //
 LUAG_FUNC( thread_gc ) {
     struct s_lane *s= lua_toLane(L,1);
@@ -1015,8 +1434,9 @@ LUAG_FUNC( thread_gc ) {
     // We can read 's->status' without locks, but not wait for it
     //
     if (s->status < DONE) {
-        // 
-        s->mstatus= SELFDESTRUCT;
+        //
+        selfdestruct_add(s);
+        assert( s->selfdestruct_next );
         return 0;
 
     } else if (s->mstatus==KILLED) {
@@ -1072,7 +1492,7 @@ LUAG_FUNC( thread_cancel )
     struct s_lane *s= lua_toLane(L,1);
     double secs= 0.0;
     uint_t force_i=2;
-    bool_t kill, done=TRUE;
+    bool_t force, done= TRUE;
     
     if (lua_isnumber(L,2)) {
         secs= lua_tonumber(L,2);
@@ -1080,34 +1500,39 @@ LUAG_FUNC( thread_cancel )
     } else if (lua_isnil(L,2))
         force_i++;
 
-    kill= lua_toboolean(L,force_i);     // FALSE if nothing there
+    force= lua_toboolean(L,force_i);     // FALSE if nothing there
     
     // We can read 's->status' without locks, but not wait for it (if Posix no PTHREAD_TIMEDJOIN)
     //
     if (s->status < DONE) {
-        
         s->cancel_request= TRUE;    // it's now signalled to stop
 
-        done= 
-#if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC) || (defined PTHREAD_TIMEDJOIN)
-            THREAD_WAIT( &s->thread, secs );
-#else
-            THREAD_WAIT( &s->thread, &s->done_signal_, &s->done_lock_, &s->status, secs );
-#endif
-
-        if ((!done) && kill) {
-            // Killing is asynchronous; we _will_ wait for it to be done at
-            // GC, to make sure the data structure can be released (alternative
-            // would be use of "cancellation cleanup handlers" that at least
-            // PThread seems to have). TBD?
-            //
-            THREAD_KILL( &s->thread );
-            s->mstatus= KILLED;     // may be useful info for GC
-        }
+        done= thread_cancel( s, secs, force );
     }
 
     lua_pushboolean( L, done );
     return 1;
+}
+
+static bool_t thread_cancel( struct s_lane *s, double secs, bool_t force )
+{
+    bool_t done= 
+#if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC) || (defined PTHREAD_TIMEDJOIN)
+        THREAD_WAIT( &s->thread, secs );
+#else
+        THREAD_WAIT( &s->thread, &s->done_signal_, &s->done_lock_, &s->status, secs );
+#endif
+
+    if ((!done) && force) {
+        // Killing is asynchronous; we _will_ wait for it to be done at
+        // GC, to make sure the data structure can be released (alternative
+        // would be use of "cancellation cleanup handlers" that at least
+        // PThread seems to have).
+        //
+        THREAD_KILL( &s->thread );
+        s->mstatus= KILLED;     // mark 'gc' to wait for it
+    }
+    return done;
 }
 
 
@@ -1144,14 +1569,14 @@ LUAG_FUNC( thread_status )
 
 
 //---
-// [...] | [nil,err_val]= thread_wait( lane_ud [, wait_secs=-1] )
+// [...] | [nil, err_any, stack_tbl]= thread_join( lane_ud [, wait_secs=-1] )
 //
 //  timeout:   returns nil
 //  done:      returns return values (0..N)
-//  error:     returns nil + error value
+//  error:     returns nil + error value + stack table
 //  cancelled: returns nil
 //
-LUAG_FUNC( thread_wait )
+LUAG_FUNC( thread_join )
 {
     struct s_lane *s= lua_toLane(L,1);
     double wait_secs= luaL_optnumber(L,2,-1.0);
@@ -1180,8 +1605,8 @@ LUAG_FUNC( thread_wait )
 
         case ERROR_ST:
             lua_pushnil(L);
-            luaG_inter_move( L2,L, 1 );    // error message at [-1]
-            ret= 2;
+            luaG_inter_move( L2,L, 2 );    // error message at [-2], stack trace at [-1]
+            ret= 3;
             break;
 
         case CANCELLED:
@@ -1320,7 +1745,11 @@ LUAG_FUNC( wakeup_conv )
     lua_setglobal( L, #name )
 
 
-int LUAG_EXPORT luaopen_lanes( lua_State *L ) {
+int 
+#if (defined PLATFORM_WIN32) || (defined PLATFORM_POCKETPC)
+__declspec(dllexport)
+#endif
+	luaopen_lanes( lua_State *L ) {
     const char *err;
     static volatile char been_here;  // =0
 
@@ -1347,6 +1776,11 @@ int LUAG_EXPORT luaopen_lanes( lua_State *L ) {
         MUTEX_RECURSIVE_INIT( &require_cs );
 
         serialize_require( L );
+
+        // Selfdestruct chain handling
+        //
+        MUTEX_INIT( &selfdestruct_cs );
+        atexit( selfdestruct_atexit );
 
         //---
         // Linux needs SCHED_RR to change thread priorities, and that is only
@@ -1390,7 +1824,7 @@ int LUAG_EXPORT luaopen_lanes( lua_State *L ) {
     lua_setglobal( L, "thread_new" );
 
     REG_FUNC( thread_status );
-    REG_FUNC( thread_wait );
+    REG_FUNC( thread_join );
     REG_FUNC( thread_cancel );
 
     REG_STR2( _version, VERSION );

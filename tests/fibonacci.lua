@@ -38,10 +38,7 @@ local function fib( n )
     else
         -- Splits into two; this task remains waiting for the results
         --
-        -- 'debug.getinfo(1,"f").func' is a trick to refer to "this function"
-        -- without recursive upvalues
-        --
-        local gen_f= lanes.gen( "io,math,debug", debug.getinfo(1,"f").func )
+        local gen_f= lanes.gen( "io,math,debug", fib )
 
         local n1=floor(n/2) +1
         local n2=floor(n/2) -1 + n%2
