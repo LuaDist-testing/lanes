@@ -1,9 +1,7 @@
--- This file was automatically generated for the LuaDist project.
-
 --
 -- Lanes rockspec
 --
--- Ref:  
+-- Ref:
 --      <http://luarocks.org/en/Rockspec_format>
 --
 -- History:
@@ -13,38 +11,32 @@
 --  AKa 20-Aug-2008: 2.0-1 sent to luarocks-developers
 --
 
-package = "lanes"
+package = "Lanes"
 
-version = "2.1-1"
+version = "3.0-beta"
 
--- LuaDist source
-source = {
-  tag = "2.1-1",
-  url = "git://github.com/LuaDist-testing/lanes.git"
+source= {
+    url= "git://github.com/LuaLanes/lanes.git",
+    branch= "v3.0-beta"
 }
--- Original source
--- source= {
---     url= "git://github.com/LuaLanes/lanes.git",
---     branch= "v2.1.0"
--- }
 
 description = {
 	summary= "Multithreading support for Lua",
 	detailed= [[
-        Lua Lanes is a portable, message passing multithreading library 
-        providing the possibility to run multiple Lua states in parallel. 
+        Lua Lanes is a portable, message passing multithreading library
+        providing the possibility to run multiple Lua states in parallel.
     ]],
 	license= "MIT/X11",
 	homepage="http://kotisivu.dnainternet.net/askok/lanes/",
-	maintainer="Benoit Germain <bnt.germain@gmail.com>"	
+	maintainer="Benoit Germain <bnt.germain@gmail.com>"
 }
 
 -- Q: What is the difference of "windows" and "win32"? Seems there is none;
 --    so should we list either one or both?
 --
 supported_platforms= { "win32",
-                       "macosx", 
-                       "linux", 
+                       "macosx",
+                       "linux",
                        "freebsd",   -- TBD: not tested
                        "msys",      -- TBD: not supported by LuaRocks 1.0 (or is it?)
 }
@@ -58,7 +50,7 @@ dependencies= {
 -- Win32: build using 'make-vc.cmd' and "manual" copy of products
 --
 -- TBD: How is MSYS treated?  We'd like (really) it to use the Makefile.
---      It should be a target like "cygwin", not defining "windows". 
+--      It should be a target like "cygwin", not defining "windows".
 --      "windows" should actually guarantee Visual C++ as the compiler.
 --
 -- Q: Does "win32" guarantee we have Visual C++ 2005/2008 command line tools?
@@ -89,7 +81,7 @@ build = {
     -- Ref: <http://www.luarocks.org/en/Paths_and_external_dependencies>
     --
     type = "make",
-    
+
     build_target = "rock",
     build_variables= {
         CFLAGS= "$(CFLAGS) -I$(LUA_INCDIR)",
@@ -102,3 +94,4 @@ build = {
         LUA_SHAREDIR= "$(LUADIR)",
     }
 }
+

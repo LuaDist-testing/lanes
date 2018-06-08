@@ -54,9 +54,9 @@
   <a href="#changes">Change log</a>
   <!-- ... -->
 
-<p><br/><font size="-1"><i>Copyright &copy; 2007-11 Asko Kauppi. All rights reserved.</i>
+<p><br/><font size="-1"><i>Copyright &copy; 2007-12 Asko Kauppi, Benoit Germain. All rights reserved.</i>
     <br>Lua Lanes is published under the same <A HREF="http://en.wikipedia.org/wiki/MIT_License">MIT license</A> as Lua 5.1.
-    </p><p>This document was revised on 1-Mar-11, and applies to version 2.1.0.
+    </p><p>This document was revised on 5-Nov-11, and applies to version 3.0-beta.
 </font></p>
 
 </center>
@@ -162,7 +162,51 @@ Or use <A HREF="http://www.luarocks.org" TARGET="_blank">Lua Rocks</A> package m
 
 <!-- launching +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ -->
 <hr/>
-<h2 id="creation">Creation</h2>
+
+  <h2 id="initialization">Initialization</h2>
+
+  <p>
+    The following sample shows how to initialize the Lanes module.
+  </p>
+
+  <table border="1" bgcolor="#FFFFE0" width="500">
+    <tr>
+      <td>
+        <pre>
+          local lanes = require "lanes"
+          lanes.configure( 1)
+        </pre>
+      </table>
+
+  <p>
+    Starting with version 3.0-beta, requiring the module follows Lua 5.2 rules:
+    the module is not available under the global name "lanes", but has to be accessed
+    through require's return value.
+    After lanes is required, it is necessary to call lanes.configure(), which is the
+    only function exposed by the module at this point. Calling configure() will
+    perform one-time initializations and make the rest of the API available.
+    At the same time, configure() itself will be replaced by another function that
+    raises an error if called with differing arguments.
+  </p>
+
+  <p>
+    <table border="1" bgcolor="#E0E0FF" cellpadding="10">
+      <tr>
+        <td>
+          <code>
+            lanes.configure( [nb_keepers] [, "NO_TIMERS"])
+          </code>
+        </table>
+  </p>
+  <p>
+    <tt>lanes.configure</tt> accepts 2 arguments. The first one controls the number
+    of keeper states used internally by lindas to transfer data between lanes. (see below).
+    Default is 1.
+  </p>
+  <p>If the second argument is equal to <tt>"NO_TIMERS"</tt>, Lanes doesn't start the timer service,
+  and the associated API will be absent from the interface (see below).
+  </p>
+  <h2 id="creation">Creation</h2>
 
 <p>The following sample shows preparing a function for parallel calling, and
 calling it with varying arguments. Each of the two results is calculated in
@@ -172,7 +216,8 @@ joins the threads, waiting for any results not already there.
 
 <table border=1 bgcolor="#FFFFE0" width=500><tr><td>
 <pre>
-  require "lanes"
+  local lanes = require "lanes"
+  lanes.configure( 1)
 
   f= lanes.gen( function(n) return 2*n end )
   a= f(1)
@@ -189,7 +234,7 @@ joins the threads, waiting for any results not already there.
     lane_h= func( ... )</code>
 </table>
 </p>
-</p><p>
+<p>
     The function returned by <tt>lanes.gen()</tt> is a "generator" for
     launching any number of lanes. They will share code, options, initial globals,
     but the particular arguments may vary. Only calling the generator function
@@ -256,6 +301,23 @@ also in the new lanes.
     modifying one will only affect the particular lane.
     </td></tr>
 
+    <tr valign="top">
+      <td/>
+      <td>
+        <code>.required</code> <br/>modules_tbl
+      </td>
+      <td>
+        Lists modules that have to be required in order to be able to trasnfer
+        functions they exposed. Starting with Lanes 3.0-beta, non-Lua functions are
+        no longer copied by recreating a C closure from a C pointer, but are searched
+        in lookup tables. These tables are built from the modules listed here. <tt>required</tt>
+        must be a list of strings, each one being the name of a module to be required.
+        <br>
+    The global values of different lanes are in no manner connected;
+    modifying one will only affect the particular lane.
+    </td>
+    </tr>
+
     <tr valign=top><td width=40><td>
         <code>.priority</code> <br/><nobr>-2..+2</nobr></td>
         <td>The priority of lanes generated. -2 is lowest, +2 is highest.
@@ -263,6 +325,19 @@ also in the new lanes.
     Implementation and dependability of priorities varies
     by platform. Especially Linux kernel 2.6 is not supporting priorities in user mode.
     </td></tr>
+
+    <tr valign="top">
+      <td width="40">
+        <td>
+          <code>.package</code><br/>
+        </td>
+        <td>
+          <code>package</code> contents overrides, if needed.
+          Specifying it when <code>libs_str</code> doesn't cause the <code>package</code> library to be loaded will generate an error.
+          If not specified, the created lane will receive the current values of <tt>package</tt>. Only path, cpath, preload and loaders are transfered.
+          <br>
+    </td>
+    </tr>
   </table>
   <p>Each lane also gets a function <tt>set_debug_threadname()</tt> that it can use anytime to do as the name says.
 Supported debuggers are Microsoft Visual Studio (for the C side) and Decoda (for the Lua side).
@@ -394,8 +469,9 @@ OS thread running the lane is forcefully killed. This means no GC, and should
 generally be the last resort.
 </p>
 <p>Cancellation is tested <u>before</u> going to sleep in <tt>receive()</tt> or <tt>send()</tt> calls
-and after executing <tt>cancelstep</tt> Lua statements. A currently pending <tt>receive()</tt>
-or <tt>send()</tt> call is currently not awakened, and may be a reason for a non-detected cancel.
+and after executing <tt>cancelstep</tt> Lua statements. Starting with version 3.0-beta, a pending <tt>receive()</tt>
+or <tt>send()</tt> call is awakened. This means the execution of the lane will resume although the operation has
+not completed, to give the lane a chance to detect cancellation. The code should be able to handle this situation appropriately if required.
 It is also possible to manually test for cancel requests with <tt>cancel_test()</tt>.
 </p>
 
@@ -470,7 +546,7 @@ level locking is required; each Linda operation is atomic.
 <p>Characteristics of the Lanes implementation of Lindas are:
 
 <ul>
-    <li>keys can be of number, string or boolean type
+    <li>keys can be of boolean, number, string or light userdata type
     </li>
     <li>values can be any type supported by inter-state copying (same limits
     as for function parameters and upvalues)
@@ -548,6 +624,23 @@ Writing to a slot overwrites existing value, and clears any possible queued
 entries. Table access and <tt>send</tt>/<tt>receive</tt> can be used together;
 reading a slot essentially peeks the next outcoming value of a queue.
 </p>
+  <p>
+
+    <table border="1" bgcolor="#E0E0FF" cellpadding="10">
+      <tr>
+        <td>
+          <code>[val]= linda_h:count( [key[,...]])</code>
+        </table>
+
+  </p>
+  <p>
+    Returns some information about the contents of the linda.
+    <br/>If no key is specified, and the linda is empty, returns nothing.
+    <br/>If no key is specified, and the linda is not empty, returns a table of key/count pairs that counts the number of items in each
+    of the exiting keys of the linda. This count can be 0 if the key has been used but is empty.
+    <br/>If a single key is specified, returns the number of pending items, or nothing if the key is unknown.
+    <br/>If more than one key is specified, return a table of key/count pairs for the known keys.
+  </p>
 
 <!--
 <p>
@@ -589,6 +682,8 @@ you want to use several?
     <li>Performance. Changing any slot in a Linda causes all pending threads
     for that Linda to be momentarily awakened (at least in the C level).
     This can degrade performance due to unnecessary OS level context switches.
+    The more keeper states you declared with <tt>lanes.configure()</tt> the less
+    this should be a problem.
     </li>
 </ul>
 
@@ -609,6 +704,10 @@ events to a common Linda, but... :).</font>
     <code>= lanes.timer( linda_h, key, date_tbl|first_secs [,period_secs] )</code>
 </table>
 
+  <p>
+    Timers are implemented as a lane. They can be disabled by passing <tt>"NO_TIMERS"</tt>
+    to <tt>lanes.configure()</tt>.
+  </p>
 <p>
 Timers can be run once, or in a reoccurring fashion (<tt>period_secs > 0</tt>).
 The first occurrence can be given either as a date or as a relative delay in seconds.
@@ -625,7 +724,8 @@ A timer can be stopped simply by <tt>first_secs=0</tt> and no period.
 
 <table border=1 bgcolor="#FFFFE0" width=500><tr><td>
 <pre>
-  require "lanes"
+  local lanes = require "lanes"
+  lanes.configure( 1)
 
   local linda= lanes.linda()
 
@@ -961,8 +1061,42 @@ its actual value.
 
 <p>
 
-Mar-2011 (2.1.0)
-<ul>
+  Nov-2011
+  <ul>
+    <li>process exit change: close everything at GC when main state closes, not when atexit() handlers are processed</li>
+    <li>Lua 5.2-style module:</li>
+    <ul>
+      <li>module() is no longer used to implement lanes.lua</li>
+      <li>a global "lanes" variable is no longer created when the module is required</li>
+      <li>the Lanes module table is returned instead</li>
+    </ul>
+    <li>Lanes must be initialized before used:</li>
+    <ul>
+      <li>the first occurence of 'require "lanes"' produces a minimal interface that only contains a configure() function</li>
+      <li>the remainder of the interface is made available once this function is called</li>
+      <li>subsequent calls to configure() do nothing</li>
+      <li>configure() controls the number of keeper states and the startup of timers</li>
+    </ul>
+    <li>* LuaJIT 2 compatibility</li>
+    <ul>
+      <li>non-Lua functions are no longer copied by creating a C closure from a C pointer, but through 2-way lookup tables</li>
+      <li>this means that if a lane function body pulls non-Lua functions, the lane generator description must contain the list of libraries and modules that exports them</li>
+      <li>introduces a change in configuration .globals management: contents are copied *after* std libs are loaded</li>
+      <li>new .required configuration entry to list modules that must be require()'ed before lane body is transferred</li>
+    </ul>
+    <li>lane:cancel() wakes up waiting lindas like what is done at lane shutdown</li>
+    <li>removed packagepath and packagecpath options, replaced by a package table, whose fields path, cpath, loaders, preload are transfered</li>
+  </ul>
+
+  Mar-2011 (not yet versioned)
+  <ul>
+    <li>linda honors __tostring and __concat</li>
+    <li>new accessor linda:count(), to get info about data stored inside a linda.</li>
+    <li>new lanes options packagepath and packagecpath, in case one needs to set them differently than the default.</li>
+  </ul>
+
+  Mar-2011 (2.1.0)
+  <ul>
   <li>fixed potential crash at application shutdown when calling lua_close() on a killed thread's VM.</li>
   <li>exposed cancel_test() in the lanes to enable manual testing for cancellation requests.</li>
   <li>removed kludgy {globals={threadName}} support, replaced with a new function set_debug_threadname().</li>
